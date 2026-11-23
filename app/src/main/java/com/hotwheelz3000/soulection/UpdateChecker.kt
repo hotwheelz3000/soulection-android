@@ -1,4 +1,4 @@
-package com.hotwheelz3000.app
+package com.hotwheelz3000.soulection
 
 import android.app.Activity
 import android.app.AlertDialog

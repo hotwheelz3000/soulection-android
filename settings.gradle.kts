@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "android-app-template"
+rootProject.name = "soulection-android"
 include(":app")

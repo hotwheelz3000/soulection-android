@@ -1,0 +1,5253 @@
+(function () {
+  if (window.__soulectionFavorites) return;
+  var SOULECTION_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*soulection\.com$/i;
+  if (window !== window.top || !SOULECTION_ORIGIN.test(location.origin)) return;
+
+  // Load ahead: the site loads more shows (and lazy covers) when its marker at the end
+  // of the list comes into view, which a fast scroll reaches before the next batch is
+  // there. Page-wide watchers (whatever margin the site gives them) now count anything
+  // within about two screens below the view as in view, so the next batch is asked for
+  // early.
+  // (Set before the site's code runs; watchers inside a scroll box are left alone.)
+  // The early report can leave the site thinking the end marker is still "in view" when
+  // the next batch lands (so it never asks again). So once a batch has landed (the page
+  // grew) and the marker is still within those two screens, its watcher is told "out of
+  // view, then in view", as a normal scroll would. It's only told after the page grew,
+  // so a batch is never asked for twice; as a fallback, a marker that's actually on
+  // screen with nothing heard for 3 seconds is told too.
+  var aheadWatchers = [];
+  (function () {
+    var IO = window.IntersectionObserver;
+    if (!IO) return;
+    var LEAD = 1600;
+    var Ahead = function (cb, opts) {
+      var o = opts || {};
+      if (o.root) return new IO(cb, o);
+      // Its own margin (CSS order: top right bottom left), with the bottom at least LEAD.
+      var parts = (o.rootMargin || '0px').trim().split(/\s+/);
+      var four = [parts[0], parts[1] || parts[0], parts[2] || parts[0], parts[3] || parts[1] || parts[0]];
+      if (/%$/.test(four[2])) return new IO(cb, o);
+      var bottom = parseFloat(four[2]) || 0;
+      if (bottom >= LEAD) return new IO(cb, o);
+      four[2] = LEAD + 'px';
+      four = four.map(function (v) { return /^-?[\d.]+$/.test(v) ? v + 'px' : v; });
+      var copy = {};
+      for (var k in o) copy[k] = o[k];
+      copy.rootMargin = four.join(' ');
+      var w = { cb: null, targets: [], last: 0, nudged: 0, height: 0 };
+      var real = new IO(function (entries, obs) {
+        w.last = Date.now();
+        w.height = document.documentElement.scrollHeight;
+        return cb.call(this, entries, w.self);
+      }, copy);
+      w.self = real;
+      var observe = real.observe, unobserve = real.unobserve, disconnect = real.disconnect;
+      real.observe = function (t) { if (w.targets.indexOf(t) < 0) w.targets.push(t); return observe.call(real, t); };
+      real.unobserve = function (t) { var i = w.targets.indexOf(t); if (i >= 0) w.targets.splice(i, 1); return unobserve.call(real, t); };
+      real.disconnect = function () { w.targets = []; return disconnect.call(real); };
+      w.cb = cb;
+      aheadWatchers.push(w);
+      return real;
+    };
+    Ahead.prototype = IO.prototype;
+    try { window.IntersectionObserver = Ahead; } catch (e) {}
+  })();
+  function fakeEntry(t, on) {
+    var r = t.getBoundingClientRect();
+    return { target: t, isIntersecting: on, intersectionRatio: on ? 1 : 0, boundingClientRect: r,
+      intersectionRect: on ? r : { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 },
+      rootBounds: null, time: performance.now() };
+  }
+  function nudgeEndMarker() {
+    var vh = window.innerHeight || 800, docH = document.documentElement.scrollHeight, now = Date.now();
+    aheadWatchers.forEach(function (w) {
+      if (now - w.last < 400) return;
+      var grew = docH > w.height + 50;
+      w.targets.forEach(function (t) {
+        if (!t.isConnected) return;
+        var r = t.getBoundingClientRect();
+        // The end-of-list marker: the last thing on the page, within the lead zone.
+        if (r.bottom <= 0 || r.top >= vh + 1600 || r.top + window.scrollY < docH - vh * 1.5) return;
+        var onScreen = r.top < vh;
+        if (!grew && !(onScreen && now - w.last > 3000 && now - w.nudged > 3000)) return;
+        w.nudged = now;
+        w.last = now;
+        w.height = docH;
+        try {
+          w.cb.call(w.self, [fakeEntry(t, false)], w.self);
+          w.cb.call(w.self, [fakeEntry(t, true)], w.self);
+        } catch (e) {}
+      });
+    });
+  }
+  var nudgeTimer = 0;
+  window.addEventListener('scroll', function () {
+    clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(nudgeEndMarker, 150);
+  }, { passive: true });
+  setInterval(function () { if (!document.hidden) nudgeEndMarker(); }, 700);
+
+  // Site styles, read from radio.soulection.com (computed values on an iPhone-sized page),
+  // with the text greys raised so all text reads at 4.5:1 or better on the dark
+  // background (WCAG 2.2 AA). The site's own greys are raised to match (see CSS).
+  var FONT = '"Bai Jamjuree", sans-serif';
+  var BG = 'rgb(26, 26, 26)';         // body, header, mini player card
+  var BORDER = 'rgb(42, 42, 42)';     // card and header borders
+  var TEXT = 'rgb(180, 180, 180)';    // body text, song and artist (site: 138; now 8.9:1)
+  var MUTED = 'rgb(150, 150, 150)';   // show lines, labels, headings (site: 90; now 5.9:1)
+  var TRACK = 'rgb(105, 105, 105)';   // progress track (site: 58; now 3.1:1 as a control)
+  var ACCENT = 'rgb(255, 255, 255)';  // filled hearts and icons
+  var HOVER = 'rgba(51, 65, 85, 0.7)'; // tracklist row hover
+  var SHADOW = 'rgba(0, 0, 0, 0.1) 0px 10px 15px -3px, rgba(0, 0, 0, 0.1) 0px 4px 6px -4px';
+
+  var HEART = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>';
+  var PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5v14l12-7z"/></svg>';
+  var SHUFFLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 14 4 4-4 4"/><path d="m18 2 4 4-4 4"/><path d="M2 18h1.97a4 4 0 0 0 3.3-1.7l5.46-8.6a4 4 0 0 1 3.3-1.7H22"/><path d="M2 6h1.97a4 4 0 0 1 3.3 1.7l.53.83"/><path d="M22 18h-6.04a4 4 0 0 1-3.3-1.8l-.36-.55"/></svg>';
+
+  var EXPORT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>';
+  var IMPORT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>';
+
+  var FORWARD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>';
+  var BACK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>';
+  var HOME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v10h4.5v-6h3v6H18V10"/></svg>';
+  var SEARCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>';
+  var DICE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="16" cy="8" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="8" cy="16" r="1.2" fill="currentColor"/><circle cx="16" cy="16" r="1.2" fill="currentColor"/></svg>';
+
+  // Sleep timer icon: three Z's, small to big, that light up in a wave while it's on.
+  var MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="rotate(-10 12 12)"><path class="sr-z sr-z1" d="M1.6 15.4h3.6l-3.6 4.2h3.6"/><path class="sr-z sr-z2" d="M7.4 11.6h4.6l-4.6 5.6h4.6"/><path class="sr-z sr-z3" d="M14.2 7h6.6l-6.6 7.6h6.6"/></g></svg>';
+
+  // Mixtape: a cassette whose reels turn while it plays.
+  var CASSETTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6.5 19l1.4-3.2h8.2l1.4 3.2"/><g class="sr-reel sr-reel1"><circle cx="8" cy="11" r="2.1"/><path d="M8 9.4v3.2M6.6 11h2.8"/></g><g class="sr-reel sr-reel2"><circle cx="16" cy="11" r="2.1"/><path d="M16 9.4v3.2M14.6 11h2.8"/></g><path d="M10.1 11h3.8"/></svg>';
+
+  var CLOUD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.5 19a4.5 4.5 0 1 0-1.4-8.8A6 6 0 0 0 4.3 13 3 3 0 0 0 6 19z"/></svg>';
+
+  var SHARE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m8 7 4-4 4 4"/><path d="M6 11H5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-1"/></svg>';
+  var NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+  var TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/></svg>';
+  var CLOSE_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+  var MORE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+  var HELP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.3a2.9 2.9 0 0 1 5.6 1c0 1.9-2.8 2.5-2.8 4.2"/><circle cx="12" cy="17.6" r=".6" fill="currentColor"/></svg>';
+
+  var CSS = [
+    // Accessibility: a clear outline on whatever has keyboard focus, a hidden
+    // live region for VoiceOver announcements, close (x) and more (...) buttons,
+    // the Likes search box, and no motion when iOS "Reduce Motion" is on.
+    '.sr-fav-root :focus-visible,.sr-np :focus-visible,.sr-note :focus-visible,.sr-welcome :focus-visible,[class*="sr-"]:focus-visible{outline:2px solid #fff;outline-offset:2px;border-radius:6px}',
+    '.sr-live{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}',
+    '.sr-sheet-head{position:relative}',
+    '.sr-new{display:inline-block;margin-left:8px;padding:2px 6px;border-radius:5px;background:#fff;color:' + BG + ';font-size:11px;line-height:14px;font-weight:700;letter-spacing:.06em;vertical-align:2px}',
+    '.sr-x{position:absolute;top:4px;right:4px;width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:none;border:0;padding:0;margin:0;color:' + TEXT + ';-webkit-appearance:none;appearance:none;cursor:pointer;-webkit-tap-highlight-color:transparent;z-index:2}',
+    '.sr-x svg{width:20px;height:20px;display:block}',
+    '.sr-x:active{opacity:.6}',
+    '.sr-more{-webkit-appearance:none;appearance:none;background:none;border:0;margin:0;padding:10px 6px;color:' + TEXT + ';display:inline-flex;align-items:center;justify-content:center;flex:none;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-more svg{width:22px;height:22px;display:block}',
+    '.sr-more,.sr-np-more{transition:color .15s ease}',
+    '.sr-more.sr-on,.sr-np-more.sr-on{color:#fff}',
+    '.sr-more:not(.sr-on),.sr-np-more:not(.sr-on){color:' + MUTED + '}',
+    '.sr-search{display:block;width:100%;box-sizing:border-box;margin-top:10px;padding:9px 12px;border:1px solid ' + BORDER + ';border-radius:9px;background:' + BG + ';color:#fff;font-family:' + FONT + ';font-size:16px;line-height:20px;-webkit-appearance:none;appearance:none}',
+    '.sr-search::placeholder{color:' + MUTED + '}',
+    '.sr-sleep-custom{display:flex;align-items:center;gap:10px;min-height:52px;border-bottom:1px solid ' + BORDER + '}',
+    '.sr-sleep-custom .sr-sleep-row{flex:1;border-bottom:0}',
+    '.sr-np-more{font-size:26px}', // top right, the same size as the close arrow across from it
+    '@media (prefers-reduced-motion: reduce){[class*="sr-"],[class*="sr-"] *,[class*="sr-"]::after{animation:none !important;transition:none !important}}',
+    // Raise the site's own text greys too (Tailwind classes on radio.soulection.com).
+    'html body{color:' + TEXT + '}',
+    'html body .text-gray-400{color:rgb(140, 140, 140)}',
+    'html body .text-gray-500{color:' + MUTED + '}',
+    'html body .text-gray-600{color:rgb(165, 165, 165)}',
+    '.sr-heart{-webkit-appearance:none;appearance:none;background:none;border:0;margin:0;padding:0;display:inline-flex;align-items:center;justify-content:center;color:' + TEXT + ';cursor:pointer;pointer-events:auto;line-height:1;vertical-align:middle;-webkit-tap-highlight-color:transparent;font:inherit}',
+    '.sr-heart svg{width:1em;height:1em;display:block}',
+    '.sr-heart[aria-pressed="true"]{color:' + ACCENT + '}',
+    '.sr-heart[aria-pressed="true"] svg{fill:currentColor}',
+    '.sr-heart-row{font-size:22px;padding:6px;margin:-8px -6px -6px auto;flex:none}',
+    // Hearts line up at the right of the song column, level with the first line of
+    // the song name (instead of wrapping under long names).
+    '.sr-song-cell{display:flex;align-items:flex-start;gap:6px}',
+    '.sr-heart-mini{font-size:23px;padding:9px;border-radius:9999px;flex:none;margin-left:auto;order:1}',
+    '.sr-heart-mini[hidden]{display:none}',
+    // The app's top bar (fixed, on every page).
+    '.sr-appbar{position:fixed;left:0;right:0;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;background:' + BG + ';border-bottom:1px solid ' + BORDER + ';padding:env(safe-area-inset-top) max(4px,env(safe-area-inset-right)) 0 max(4px,env(safe-area-inset-left));min-height:calc(env(safe-area-inset-top) + 44px);box-sizing:border-box}',
+    '.sr-appbar[hidden]{display:none}',
+    '.sr-appbar.sr-appbar-cover{align-items:flex-start;min-height:0;padding-bottom:0;box-sizing:border-box}',
+    'html.sr-lock .sr-appbar{visibility:hidden}',
+    '.sr-appbar.sr-appbar-hold{background:none;border:0;padding-top:0;padding-bottom:0;min-height:0;box-sizing:border-box}',
+    '.sr-appbar-side{display:flex;align-items:center;flex:none}',
+    '.sr-appbar-btn{font-size:24px;padding:7px 6px;margin:0;flex:none}',
+    // iPhone home page: the site's Trending tracks row, hidden.
+    '@media (max-width:767px){[data-sr-trend-hide]{display:none!important}}',
+    '[data-sr-bar-row]{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:center!important;position:relative!important}',
+    '[data-sr-bar-row]>[data-sr-drop]{position:absolute!important;top:100%!important;left:0!important;right:0!important;width:auto!important;margin:4px 0 0!important;z-index:60!important}',
+    '.sr-appbar-btn[aria-disabled="true"]{opacity:.3;cursor:default}',
+    '.sr-search-top{display:none}',
+    '.sr-appbar-cover .sr-search-top{display:block}',
+    'html.sr-lock .sr-appbar{visibility:hidden}',
+    '.sr-heart-top{font-size:23px;padding:8px;margin:0 -4px 0 4px;flex:none;align-self:center}',
+    '.sr-dice-top{font-size:23px;padding:8px;margin:0 -4px 0 0;flex:none;align-self:center}',
+    '.sr-dice-top[aria-busy="true"] svg{animation:sr-spin .8s linear infinite}',
+    '@keyframes sr-spin{to{transform:rotate(360deg)}}',
+    '.sr-dice-top[aria-busy="true"] svg{animation:sr-spin .7s linear infinite}',
+    // The song playing in a show's tracklist: a light background and moving bars.
+    '.sr-row-playing{background:rgba(255,255,255,.06);border-radius:8px}',
+    '.sr-mini-over{position:absolute;inset:0;z-index:3;pointer-events:none}',
+    '.sr-mini-over > *{position:absolute;pointer-events:auto;cursor:pointer;margin:0;box-sizing:border-box}',
+    '.sr-mo-img{object-fit:cover}',
+    '.sr-mo-text{display:flex;flex-direction:column;justify-content:center;min-width:0;overflow:hidden}',
+    '.sr-mo-text > div{flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-mo-song{font-weight:700}',
+    // Song and artist share one line: a long title is shortened ("…") so the artist
+    // always shows (the site's mini player, the app's copy and the ready card).
+    '.content-col > div:nth-child(2),.sr-mo-line,.sr-ready-line{display:flex!important;align-items:baseline}',
+    '.content-col > div:nth-child(2) > span,.sr-mo-line > span,.sr-ready-line > span{white-space:nowrap;flex:0 0 auto}',
+    '.content-col > div:nth-child(2) > span:first-child,.sr-mo-song,.sr-ready-song{flex:0 1 auto!important;min-width:0;overflow:hidden;text-overflow:ellipsis}',
+    '.content-col > div:nth-child(2) > span:last-child:not(:first-child),.sr-mo-artist,.sr-ready-artist{max-width:55%;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-mo-artist,.sr-ready-artist{margin-left:.3em}',
+    // Ready to carry on: a mini player for where you left off, before anything plays.
+    '.sr-ready{position:fixed;left:0;right:0;bottom:0;z-index:30;box-sizing:border-box;background:' + BG + ';border:1px solid ' + BORDER + ';border-radius:9px;padding:12px;font-family:' + FONT + ';color:' + TEXT + '}',
+    '.sr-ready-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}',
+    '.sr-ready-info{display:flex;align-items:center;gap:16px;min-width:0;flex:1 1 auto;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-ready-img{width:48px;height:48px;border-radius:1.5px;object-fit:cover;flex:none}',
+    '.sr-ready-texts{display:flex;flex-direction:column;gap:4px;min-width:0}',
+    '.sr-ready-show{font-size:9px;line-height:12px;color:' + MUTED + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-ready-line{font-size:12px;line-height:18px;min-width:0;overflow:hidden}',
+    '.sr-ready-song{font-weight:600}',
+    '.sr-ready-times{display:flex;justify-content:space-between;font-size:9px;line-height:12px;color:' + MUTED + '}',
+    '.sr-ready-play{flex:none;padding:8px;border-radius:9999px}',
+    '.sr-ready-row .sr-heart-mini{margin-right:-10px}',
+    // While a show is starting, the Soulection logo spins in the play button's place
+    // (just the logo: no circle around it). With Reduce Motion it stays still.
+    '.sr-hello .sr-ready-row{margin-bottom:0}',
+    // A drag that starts on a mini player belongs to it (open or skip), never to the page.
+    '.sr-grab,.sr-live-card,.sr-mini-over{touch-action:none}',
+    '.sr-spin-logo{display:block;width:26px;height:26px;background:currentColor;-webkit-mask:url(/logo.svg) center/contain no-repeat;mask:url(/logo.svg) center/contain no-repeat;animation:sr-spin 1s linear infinite}',
+    '.sr-np-play.sr-loading{background:transparent;color:#fff}',
+    '.sr-np-play .sr-spin-logo{width:44px;height:44px}',
+    // Hidden from sight, still there for VoiceOver and the keyboard.
+    '.sr-vh{position:absolute !important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}',
+    // Songs: the show's song list, sliding up inside the big player.
+    // Up Next: plain text, no box.
+    '.sr-np-songs-btn{-webkit-appearance:none;appearance:none;align-self:center;font-family:' + FONT + ';font-size:15px;line-height:20px;font-weight:600;color:' + TEXT + ';background:none;border:0;padding:10px 12px;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-np-songs-btn:active{opacity:.6}',
+    '.sr-np-songs-btn[aria-expanded="true"]{color:#fff}',
+    '.sr-np-songs{position:absolute;left:0;right:0;bottom:0;top:calc(env(safe-area-inset-top) + 58px);z-index:3;display:flex;flex-direction:column;background:' + BG + ';border-top:1px solid ' + BORDER + ';border-radius:12px 12px 0 0;transform:translate3d(0,100%,0);visibility:hidden;will-change:transform;transition:transform .32s cubic-bezier(.2,.8,.2,1),visibility 0s .32s}',
+    '.sr-np.sr-np-songs-open .sr-np-songs{transform:translate3d(0,0,0);visibility:visible;transition:transform .32s cubic-bezier(.2,.8,.2,1)}',
+    '.sr-np-songs-head{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:12px 16px 4px 20px}',
+    // The arrow back to the cover sits on its own line, centred under the show name.
+    // Centred on the screen (the head has 20px on the left, 16px on the right).
+    '.sr-np-songs-head .sr-np-songs-close{flex:none;margin:0 auto;position:relative;left:-2px}',
+    '.sr-np-songs-head img{width:48px;height:48px;border-radius:4px;object-fit:cover;flex:none;background:' + TRACK + '}',
+    '.sr-np-songs-title{flex:1 1 calc(100% - 60px);min-width:0;font-size:15px;line-height:20px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-np-songs-title small{display:block;font-size:12px;line-height:16px;font-weight:400;color:' + MUTED + '}',
+    '.sr-np-songs-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y;contain:content;padding:0 10px calc(env(safe-area-inset-bottom) + 12px)}',
+    '.sr-np-song{display:flex;align-items:center;gap:6px;border-radius:8px}',
+    '.sr-np-song-go{-webkit-appearance:none;appearance:none;flex:1;min-width:0;display:grid;grid-template-columns:62px minmax(0,1fr);align-items:center;gap:6px;padding:9px 8px;border:0;background:none;text-align:left;font-family:' + FONT + ';color:' + TEXT + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-np-song-t{font-size:12px;color:' + MUTED + ';font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-np-song-go > span{min-width:0}', // long names wrap onto more lines, never under the heart
+    '.sr-np-song-name{display:block;font-size:15px;line-height:20px;white-space:normal;overflow-wrap:anywhere}',
+    '.sr-np-song-artist{display:block;font-size:13px;line-height:18px;color:' + MUTED + ';white-space:normal;overflow-wrap:anywhere}',
+    '.sr-np-song.sr-now{background:rgba(255,255,255,.06)}',
+    '.sr-np-song.sr-now .sr-np-song-name{color:#fff;font-weight:600}',
+    '.sr-np-song .sr-heart{font-size:22px;padding:10px;flex:none}',
+    '.sr-np-song-name .sr-bars{margin:0 7px 0 0;vertical-align:-1px;color:#fff}',
+    '.sr-fade-in{animation:sr-fade-in .2s ease both}',
+    '.sr-fade-out{transition:opacity .18s ease;opacity:0}',
+    '@keyframes sr-fade-in{from{opacity:0}to{opacity:1}}',
+    // The welcome player rises into place; the big player's song name fades in when it
+    // changes.
+    '.sr-rise-in{animation:sr-rise-in .2s cubic-bezier(.2,.8,.2,1) both}',
+    '@keyframes sr-rise-in{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}',
+    '.sr-swap-in{animation:sr-fade-in .2s ease both}',
+    // Show covers on the site keep their square space while they load, so the list
+    // doesn't shrink and jump when the site adds more shows and the covers reload
+    // (iPhone's browser doesn't hold your place when content above changes size).
+    'main a[href^="/episodes/"] img{aspect-ratio:1/1;height:auto}',
+    // Pages only scroll up and down: nothing may make them wider than the screen
+    // (long song names wrap instead of pushing a row wider).
+    'html,body{overflow-x:hidden;max-width:100%}',
+    // No grey tap flash on the site's pages (it lit up a show when a scroll or pull
+    // started on it). Tapping still works as usual.
+    'html,html *{-webkit-tap-highlight-color:transparent}',
+    // ...except the tracklist rows: tapping a timestamp still flashes, so it's clear it worked.
+    '[data-sr-row],[data-sr-row] *{-webkit-tap-highlight-color:rgba(255,255,255,.14)}',
+    '.sr-heart,.sr-heart *{-webkit-tap-highlight-color:transparent}',
+    // The show cards' hover / press shading is for a mouse: on a phone a finger resting
+    // on a show (say, at the start of a pull) left it shaded. Touch screens only, show
+    // cards only (links to a show); tracklist rows keep their press highlight.
+    '@media (hover:none){a[href*="/episodes/"]:not([data-sr-row] a):hover,a[href*="/episodes/"]:not([data-sr-row] a):active,a[href*="/episodes/"]:not([data-sr-row] a):hover [class*="hover:bg-"],a[href*="/episodes/"]:not([data-sr-row] a):active [class*="active:bg-"],a[href*="/episodes/"]:not([data-sr-row] a):hover [class*="group-hover:bg-"]{background-color:transparent!important}}',
+    // Tracklist rows: a slightly long tap on a timestamp jumps, it never selects text.
+    '[data-sr-row],[data-sr-row] *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}',
+    'main{overflow-x:clip}',
+    // Only the song-list rows the app recognises (it puts hearts on them), so other
+    // lists built the same way, like Trending tracks, scroll as the site made them.
+    '[data-sr-row]{min-width:0;max-width:100%}',
+    // Song rows only scroll the page up and down (a sideways drag on the list does
+    // nothing). The boxes around the list are left alone: the show's player sits in them.
+    '[data-sr-row]{touch-action:pan-y pinch-zoom}',
+    '[data-sr-row] > *{min-width:0;overflow-wrap:anywhere}',
+    '.sr-hello .sr-ready-song{font-weight:600}',
+    '.sr-hello-logo{position:relative;width:48px;height:48px;flex:none}',
+    '.sr-hello-logo::after{content:"";position:absolute;inset:13px 10px;background:' + TEXT + ';-webkit-mask:url(/logo.svg) center/contain no-repeat;mask:url(/logo.svg) center/contain no-repeat}',
+    '.sr-ready-play{-webkit-appearance:none;appearance:none;background:none;border:0;margin:0;color:' + TEXT + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-ready-play svg{display:block;width:28px;height:28px}',
+    '.sr-ready-track{position:relative;height:8px;display:flex;align-items:center;margin-bottom:8px}',
+    '.sr-ready-track::before{content:"";position:absolute;left:0;right:0;height:1px;background:' + TRACK + '}',
+    '.sr-ready-fill{position:absolute;left:0;height:1px;background:' + TEXT + '}',
+    '.sr-ready-knob{position:absolute;top:50%;width:16px;height:16px;margin-top:-8px;border-radius:50%;background:rgb(234, 88, 12);transform:translateX(-50%)}',
+    '.sr-mo-bar{display:flex;align-items:center}',
+    '.sr-mo-track{position:relative;flex:1;overflow:hidden}',
+    '.sr-mo-fill{position:absolute;left:0;top:0;bottom:0;width:0}',
+    '.sr-mo-knob{position:absolute;top:50%;transform:translate(-50%,-50%)}',
+    '.sr-mo-time{white-space:nowrap;pointer-events:none}',
+    '.sr-mo-play{-webkit-appearance:none;appearance:none;background:none;border:0;padding:0;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}',
+    '.sr-mo-play svg{width:var(--sr-icon,24px);height:var(--sr-icon,24px);display:block}',
+    '.sr-mini-direct [data-sr-mini-hide]{visibility:hidden}',
+    '.sr-mini-direct .sr-heart-mini{position:relative;z-index:4}',
+    '.sr-note-why{font-size:12px;line-height:16px;color:' + MUTED + '}',
+    '.sr-btn.sr-help-welcome{display:flex;margin:14px auto 0;padding:10px 16px;font-size:14px;line-height:20px}',
+    '.sr-help-build{padding:14px 0 6px;font-size:11px;line-height:16px;color:' + MUTED + ';text-align:center;white-space:pre-line}',
+    '.sr-mini-direct .sr-grab{z-index:4}',
+    '.sr-player-frame{position:fixed;left:-10px;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;border:0}',
+    '.sr-song-cell > .sr-bars{margin:5px 0 0 auto}',
+    '.sr-row-playing .sr-heart-row{margin-left:0}',
+    '.sr-row-flash{animation:sr-flash 1.8s ease}',
+    '@keyframes sr-flash{0%,60%{background:rgba(255,255,255,.16)}100%{background:transparent}}',
+    '.sr-bars{display:inline-flex;align-items:flex-end;gap:2px;width:12px;height:12px;margin-top:4px;flex:none;color:' + TEXT + '}',
+    '.sr-bars i{display:block;width:2.5px;height:100%;background:currentColor;border-radius:1px;transform-origin:bottom;animation:sr-bar 1s ease-in-out infinite}',
+    '.sr-bars i:nth-child(2){animation-delay:-.4s}',
+    '.sr-bars i:nth-child(3){animation-delay:-.7s}',
+    '.sr-bars.sr-paused i{animation-play-state:paused}',
+    '@keyframes sr-bar{0%,100%{transform:scaleY(.3)}50%{transform:scaleY(1)}}',
+    // Continue listening: a row of the last few shows you were in the middle of.
+    '.sr-continue{flex:none;padding:0 12px 10px}',
+    '.sr-continue[hidden]{display:none}',
+    '.sr-continue-title{font-size:12px;line-height:16px;font-weight:600;color:' + MUTED + ';margin:0 0 6px}',
+    '.sr-continue-row{display:flex;gap:10px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin:0 -12px;padding:0 12px;overscroll-behavior-x:contain}',
+    '.sr-continue-row::-webkit-scrollbar{display:none}',
+    '.sr-continue-item{-webkit-appearance:none;appearance:none;flex:none;width:72px;display:grid;gap:4px;padding:0;margin:0;border:0;background:none;text-align:left;font-family:' + FONT + ';color:' + TEXT + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-continue-item img{width:72px;height:72px;border-radius:4px;object-fit:cover;background:' + TRACK + ';display:block}',
+    '.sr-continue-bar{height:3px;border-radius:9999px;background:' + TRACK + ';overflow:hidden}',
+    '.sr-continue-bar i{display:block;height:100%;background:#fff}',
+    '.sr-continue-name{font-size:12px;line-height:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-continue-left{font-size:11px;line-height:14px;color:' + MUTED + '}',
+    '.sr-continue-item:active{opacity:.6}',
+    '.sr-continue-empty{font-size:12px;line-height:16px;color:' + MUTED + ';padding:2px 0 4px}',
+    '.sr-auto{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;line-height:16px;color:' + MUTED + '}',
+    '.sr-auto .sr-auto-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-auto .sr-auto-text b{color:' + TEXT + ';font-weight:600}',
+    '.sr-auto .sr-btn{padding:7px 12px;font-size:13px;line-height:18px;gap:6px;flex:none}',
+    '.sr-auto .sr-btn svg{width:15px;height:15px}',
+    '.sr-help-top{font-size:23px;padding:8px;margin:0 -4px 0 0;flex:none;align-self:center}',
+    // Five icons on a phone: tighter spacing so the search box keeps its room.
+    '@media (max-width:480px){.sr-heart-top,.sr-dice-top,.sr-tape-top,.sr-moon-top,.sr-help-top{padding:7px 5px;margin:0;font-size:22px}}',
+    // Press-and-hold labels for the top bar icons.
+    '.sr-tip{position:fixed;z-index:70;padding:5px 9px;border-radius:6px;background:#fff;color:' + BG + ';font-family:' + FONT + ';font-size:12px;line-height:16px;font-weight:600;white-space:nowrap;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.4);opacity:0;transform:translateY(-4px);transition:opacity .12s,transform .12s}',
+    '.sr-tip.sr-show{opacity:1;transform:none}',
+    // "?" panel and the first-launch welcome screen.
+    '.sr-help .sr-sheet{min-height:0}',
+    '.sr-help-list{padding:4px 0 8px}',
+    '.sr-help-row{display:flex;align-items:flex-start;gap:14px;padding:12px 0;border-bottom:1px solid ' + BORDER + '}',
+    '.sr-help-row:last-child{border-bottom:0}',
+    '.sr-help-icon{flex:none;width:30px;height:30px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:24px}',
+    '.sr-help-icon svg{width:1em;height:1em;display:block}',
+    '.sr-help-title{font-size:15px;line-height:20px;font-weight:600;color:#fff}',
+    '.sr-help-desc{font-size:13px;line-height:18px;color:' + TEXT + ';margin-top:2px}',
+    '.sr-welcome{position:fixed;inset:0;z-index:65;background:' + BG + ';color:' + TEXT + ';font-family:' + FONT + ';display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 28px) 26px calc(env(safe-area-inset-bottom) + 20px);box-sizing:border-box;overflow:hidden;opacity:0;transition:opacity .22s}',
+    '.sr-welcome.sr-show{opacity:1}',
+    '.sr-welcome-title{font-size:28px;line-height:1.2;font-weight:600;color:#fff;margin:6px 0 0;white-space:nowrap}',
+    '.sr-welcome-check{display:flex;align-items:center;gap:10px;margin-top:14px;font-size:15px;line-height:20px;color:' + TEXT + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-welcome-check input{-webkit-appearance:none;appearance:none;flex:none;width:22px;height:22px;margin:0;border:1.5px solid ' + MUTED + ';border-radius:6px;background:none;display:grid;place-content:center}',
+    '.sr-welcome-check input:checked{background:#fff;border-color:#fff}',
+    '.sr-welcome-check input:checked::after{content:"";width:6px;height:11px;border:solid ' + BG + ';border-width:0 2.5px 2.5px 0;transform:translateY(-1px) rotate(45deg)}',
+    '.sr-welcome-sub{font-size:15px;line-height:21px;color:' + TEXT + ';margin:8px 0 14px}',
+    '.sr-welcome .sr-help-list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;border-bottom:1px solid ' + BORDER + '}',
+    '.sr-welcome-title,.sr-welcome-sub,.sr-welcome-check,.sr-welcome-go{flex:none}',
+    '.sr-welcome-go{-webkit-appearance:none;appearance:none;flex:none;margin-top:16px;width:100%;height:52px;border:0;border-radius:9999px;background:#fff;color:' + BG + ';font-family:' + FONT + ';font-size:17px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-welcome-go:active{transform:scale(.98)}',
+    '.sr-tape-top{font-size:25px;padding:8px;margin:0 -4px 0 0;flex:none;align-self:center}',
+    '.sr-tape-top[aria-pressed="true"]{color:#fff}',
+    '.sr-tape-top[aria-pressed="true"] svg{fill:none}',
+    '.sr-reel{transform-box:fill-box;transform-origin:center}',
+    '.sr-tape-top[aria-pressed="true"] .sr-reel{animation:sr-spin 2.4s linear infinite}',
+    '.sr-tape-top[aria-busy="true"] .sr-reel{animation:sr-spin .8s linear infinite}',
+    // Favorites | History switch at the top of the sheet.
+    '.sr-tabs{display:flex;gap:18px;align-items:baseline}',
+    '.sr-tabbtn{-webkit-appearance:none;appearance:none;background:none;border:0;padding:0;margin:0;font-family:' + FONT + ';font-size:18px;line-height:24px;font-weight:600;color:' + MUTED + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-tabbtn[aria-pressed="true"]{color:' + TEXT + '}',
+    // A thin line between History and Likes.
+    '.sr-tabs{position:relative}',
+    '.sr-tabbtn + .sr-tabbtn{position:relative}',
+    '.sr-tabbtn + .sr-tabbtn::before{content:"";position:absolute;left:-10px;top:3px;bottom:3px;width:1px;background:' + MUTED + ';opacity:.7;pointer-events:none}',
+    '.sr-clear[hidden]{display:none}',
+    // Sleep timer: moon in the top bar (with time left) and its panel.
+    '.sr-moon-top{font-size:25px;padding:8px;margin:0 -4px 0 0;flex:none;align-self:center;gap:4px}',
+    '.sr-moon-top[aria-pressed="true"]{color:#fff}',
+    '.sr-moon-top[aria-pressed="true"] svg{fill:none}',
+    '.sr-moon-top[aria-pressed="true"] .sr-z{animation:sr-zz 1.8s ease-in-out infinite}',
+    '.sr-moon-top[aria-pressed="true"] .sr-z2{animation-delay:.3s}',
+    '.sr-moon-top[aria-pressed="true"] .sr-z3{animation-delay:.6s}',
+    '@keyframes sr-zz{0%,100%{opacity:.4}45%{opacity:1}}',
+    '.sr-sleep .sr-sheet{min-height:0}',
+    '.sr-sleep-title{font-size:13px;line-height:18px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:' + MUTED + ';margin:0}',
+    '.sr-sleep-status{font-size:12px;line-height:16px;color:' + MUTED + ';margin-top:3px}',
+    '.sr-sleep-now{display:flex;align-items:center;justify-content:space-between;gap:12px}',
+    '.sr-sleep-plus{-webkit-appearance:none;appearance:none;flex:none;margin:6px 0 0;padding:8px 14px;border:1px solid ' + BORDER + ';border-radius:9999px;background:none;color:' + TEXT + ';font-family:' + FONT + ';font-size:14px;line-height:18px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-sleep-plus:active{background:' + HOVER + '}',
+    '.sr-sleep-plus[hidden]{display:none}',
+    '.sr-sleep-count{display:block;font-size:40px;line-height:46px;font-weight:600;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em;margin-top:4px}',
+    '.sr-sleep-row{display:flex;align-items:center;gap:12px;width:100%;min-height:52px;padding:0;margin:0;background:none;border:0;border-bottom:1px solid ' + BORDER + ';-webkit-appearance:none;appearance:none;font-family:' + FONT + ';font-size:17px;line-height:22px;color:' + TEXT + ';text-align:left;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-sleep-row:last-child{border-bottom:0}',
+    '.sr-sleep-row:active{background:' + HOVER + '}',
+    '.sr-sleep-row[aria-current="true"]{font-weight:600}',
+    '.sr-sleep-row .sr-grow{flex:1}',
+    '.sr-step{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:9999px;border:1px solid ' + BORDER + ';background:none;color:' + TEXT + ';font-size:22px;line-height:1;padding:0;-webkit-appearance:none;appearance:none;cursor:pointer}',
+    '.sr-step:active{background:' + HOVER + '}',
+    '.sr-sleep-off{color:' + TEXT + ';font-weight:600}',
+    // Full-size player.
+    '.sr-np{position:fixed;inset:0;z-index:45;background:' + BG + ';color:' + TEXT + ';font-family:' + FONT + ';overflow:hidden;transform:translate3d(0,100%,0);will-change:transform;-webkit-user-select:none;user-select:none}',
+    '.sr-np[hidden]{display:none}',
+    // The app's own screens work like a native app: no selecting text, no Copy / Look Up
+    // menu and no long-press pop-up on pictures (the site's pages are left as they are).
+    '.sr-fav-root,.sr-fav-root *,.sr-note,.sr-note *,.sr-ready,.sr-ready *,.sr-appbar,.sr-appbar *,.sr-appbar-side,.sr-appbar-side *,.sr-mini-over,.sr-mini-over *,.sr-tip,.sr-heart,.sr-grab{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}',
+    '.sr-fav-root input,.sr-fav-root textarea,.sr-note input{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}',
+    '.sr-np-fly{position:absolute;left:0;top:0;z-index:3;object-fit:cover;pointer-events:none;box-shadow:0 18px 40px rgba(0,0,0,.45);will-change:transform,width,height}',
+    '.sr-np-ghost{position:absolute;left:0;top:0;z-index:2;pointer-events:none;will-change:transform,opacity}',
+    '.sr-np-bg{position:absolute;inset:-60px;background-size:cover;background-position:center;filter:blur(50px) saturate(1.2);opacity:.35;pointer-events:none}',
+    '.sr-np-bg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(26,26,26,.2) 0%,rgba(26,26,26,.85) 55%,' + BG + ' 100%)}',
+    '.sr-np-inner{position:relative;height:100%;box-sizing:border-box;display:flex;flex-direction:column;padding:calc(env(safe-area-inset-top) + 6px) 24px calc(env(safe-area-inset-bottom) + 18px)}',
+    '.sr-np-top{display:flex;align-items:center;gap:8px;flex:none}',
+    '.sr-np-from{flex:1;min-width:0;text-align:center;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-np-from:active .sr-np-show{color:' + ACCENT + '}',
+    '.sr-np-from-label{font-size:11px;line-height:14px;letter-spacing:.08em;text-transform:uppercase;color:' + MUTED + '}',
+    '.sr-np-show{font-size:13px;line-height:18px;font-weight:600;color:' + TEXT + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-np-icon{-webkit-appearance:none;appearance:none;background:none;border:0;margin:0;padding:8px;color:' + TEXT + ';display:inline-flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent;flex:none;font-size:26px;line-height:1}',
+    '.sr-np-icon svg{width:1em;height:1em;display:block}',
+    '.sr-np-icon:active{opacity:.6}',
+    '.sr-np-art{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:18px 0}',
+    '.sr-np-cover{width:100%;max-width:min(100%,52vh);aspect-ratio:1;object-fit:cover;border-radius:6px;box-shadow:0 18px 40px rgba(0,0,0,.5);background:' + TRACK + '}',
+    '.sr-np-meta{display:flex;align-items:center;gap:12px;flex:none}',
+    '.sr-np-text{flex:1;min-width:0}',
+    '.sr-np-title{font-size:22px;line-height:28px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-np-artist{font-size:16px;line-height:22px;color:' + TEXT + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-np-meta .sr-heart{font-size:26px;padding:8px;margin-right:-8px;flex:none}',
+    '.sr-np-meta .sr-heart[hidden]{display:none}',
+    '.sr-np-bar{flex:none;padding:16px 0 4px;touch-action:none}',
+    '.sr-np-track{position:relative;height:4px;border-radius:9999px;background:' + TRACK + '}',
+    '.sr-np-fill{position:absolute;left:0;top:0;bottom:0;border-radius:9999px;background:#fff}',
+    '.sr-np-knob{position:absolute;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:9999px;background:#fff;transition:transform .15s}',
+    '.sr-np-scrubbing .sr-np-knob{transform:scale(1.4)}',
+    '.sr-np-times{display:flex;justify-content:space-between;margin-top:8px;font-size:12px;line-height:16px;color:' + MUTED + ';font-variant-numeric:tabular-nums}',
+    '.sr-np-controls{flex:none;display:flex;align-items:center;justify-content:space-between;padding:10px 12px 6px}',
+    '.sr-np-controls .sr-np-icon{font-size:36px;color:#fff}',
+    '.sr-np-play{-webkit-appearance:none;appearance:none;width:72px;height:72px;border-radius:9999px;border:0;padding:0;margin:0;background:#fff;color:' + BG + ';display:inline-flex;align-items:center;justify-content:center;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .12s}',
+    '.sr-np-play:active{transform:scale(.92)}',
+    '.sr-np-play svg{width:34px;height:34px;display:block}',
+    '.sr-np-extras{flex:none;display:flex;justify-content:space-between;padding-top:8px}',
+    '.sr-np-extras .sr-np-icon{font-size:24px}',
+    '.sr-np-sleep[aria-pressed="true"]{color:#fff}',
+    '.sr-np-sleep[aria-pressed="true"] .sr-z{animation:sr-zz 1.8s ease-in-out infinite}',
+    '.sr-np-sleep[aria-pressed="true"] .sr-z2{animation-delay:.3s}',
+    '.sr-np-sleep[aria-pressed="true"] .sr-z3{animation-delay:.6s}',
+    '.sr-grab{position:absolute;top:0;left:50%;width:64px;height:14px;margin-left:-32px;padding:0;border:0;background:none;-webkit-appearance:none;appearance:none;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-grab::after,.sr-sheet-grab{content:"";display:block;width:36px;height:4px;border-radius:9999px;background:' + TRACK + '}',
+    '.sr-grab::after{margin:5px auto 0;transition:background-color .15s ease}',
+    '.sr-touching .sr-grab::after,.sr-grab:active::after{background:' + TEXT + '}',
+    '.sr-backdrop{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,0.5);opacity:0;transition:opacity .2s ease;-webkit-tap-highlight-color:transparent}',
+    '.sr-sheet{position:fixed;left:0;right:0;bottom:0;z-index:51;display:flex;flex-direction:column;min-height:55vh;max-height:85vh;background:' + BG + ';border:1px solid ' + BORDER + ';border-bottom:0;border-radius:9px 9px 0 0;box-shadow:' + SHADOW + ';font-family:' + FONT + ';font-size:12px;line-height:18px;font-weight:400;color:' + TEXT + ';transform:translateY(100%);transition:transform .22s cubic-bezier(.2,.8,.2,1);padding-bottom:env(safe-area-inset-bottom)}',
+    '.sr-backdrop[hidden],.sr-sheet[hidden]{display:none}',
+    '.sr-open .sr-backdrop{opacity:1}',
+    '.sr-open .sr-sheet{transform:none}',
+    '.sr-sheet-head{padding:5px 12px 12px;flex:none;-webkit-user-select:none;user-select:none}',
+    '.sr-sheet-grab{margin:0 auto 12px}',
+    '.sr-sheet-title{font-size:18px;line-height:24px;font-weight:600;color:' + TEXT + ';margin:0}',
+    '.sr-sheet-sub{font-size:12px;line-height:16px;color:' + MUTED + ';margin-top:3px}',
+    '.sr-actions{display:flex;gap:10px;margin-top:14px}',
+    '.sr-btn{-webkit-appearance:none;appearance:none;display:inline-flex;align-items:center;gap:8px;padding:10px 16px;margin:0;background:' + BG + ';border:1px solid ' + BORDER + ';border-radius:8px;color:' + TEXT + ';font-family:' + FONT + ';font-size:15px;line-height:20px;font-weight:400;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background-color .15s}',
+    '.sr-btn svg{width:18px;height:18px;display:block;color:' + ACCENT + '}',
+    '.sr-btn:active{background:' + HOVER + '}',
+    '.sr-btn[disabled]{opacity:.5;cursor:default}',
+    '.sr-list{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:none;border-top:1px solid ' + BORDER + ';padding:0 12px}',
+    '.sr-item{position:relative;overflow:hidden;border-bottom:1px solid ' + BORDER + '}',
+    '.sr-item-remove{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;padding-right:6px;color:' + ACCENT + '}',
+    '.sr-item-main{position:relative;display:flex;align-items:center;gap:12px;padding:9px 0;background:' + BG + ';cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-item-main img{width:48px;height:48px;border-radius:1.5px;object-fit:cover;flex:none;background:' + TRACK + '}',
+    '.sr-item-text{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}',
+    '.sr-item-show{font-size:9px;line-height:12px;color:' + MUTED + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-item-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.sr-item-song{font-weight:600}',
+    '.sr-item-main .sr-bars{margin:0 2px 0 0;align-self:center}',
+    '.sr-item .sr-heart{font-size:23px;padding:10px;margin-right:-10px}',
+    '.sr-empty{padding:24px 12px;text-align:center;color:' + MUTED + '}',
+    'html.sr-lock,html.sr-lock body{overflow:hidden}',
+    // Backup: Export/Import row in the sheet, a reminder card and short messages.
+    '.sr-backup{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:12px;line-height:16px;color:' + MUTED + '}',
+    '.sr-backup .sr-btn{padding:7px 12px;font-size:13px;line-height:18px;gap:6px}',
+    '.sr-backup .sr-btn svg{width:15px;height:15px}',
+    '.sr-note{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top) + 72px);z-index:60;padding:10px 12px;background:' + BG + ';border:1px solid ' + BORDER + ';border-radius:9px;box-shadow:' + SHADOW + ';font-family:' + FONT + ';font-size:14px;line-height:20px;color:' + TEXT + ';opacity:0;transform:translateY(-8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none}',
+    '.sr-note.sr-show{opacity:1;transform:none;pointer-events:auto}',
+    '.sr-note .sr-actions{margin-top:8px;flex-wrap:wrap;gap:6px}',
+    // Message buttons: compact (still at least 30px tall to tap).
+    '.sr-note .sr-btn{padding:5px 10px;font-size:14px;line-height:19px;gap:6px;border-radius:7px}',
+    '.sr-note .sr-btn svg{width:15px;height:15px;color:inherit}',
+    // Song menu: equal tiles, icon above a small label.
+    // ...and it pops out from the left, like a word bubble (same place and shape, no bounce).
+    // The song menu only grows out from the left: no slide as well (two motions at once
+    // made it wobble as it settled). Closing just fades.
+    '.sr-note.sr-tiles{transform-origin:left center;transform:none;transition:opacity .2s ease;animation:sr-pop .28s cubic-bezier(.2,.8,.2,1)}',
+    // Like a thought bubble: starts small, round and soft, floats up as it opens, then
+    // sharpens into the box and stops still.
+    // The full player's ... : just the buttons, no box, in the space under the top row.
+    // They show and hide all at once, with no animation.
+    '.sr-np-actions{position:absolute;left:24px;right:24px;z-index:2;display:flex;justify-content:space-around}',
+    '.sr-np-act{-webkit-appearance:none;appearance:none;background:none;border:0;margin:0;padding:6px 10px;display:flex;flex-direction:column;align-items:center;gap:4px;color:' + TEXT + ';font-family:' + FONT + ';font-size:11px;line-height:14px;font-weight:600;cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '.sr-np-act svg{width:22px;height:22px}',
+    '.sr-np-act:active{color:#fff}',
+    '@keyframes sr-pop{0%{opacity:0;transform:translateY(18px) scale(.18,.3);border-radius:60px;filter:blur(8px)}45%{opacity:1;border-radius:30px}100%{opacity:1;transform:none;border-radius:9px;filter:none}}',
+    '.sr-note.sr-tiles .sr-actions{flex-wrap:nowrap;gap:6px}',
+    '.sr-note.sr-tiles .sr-btn{flex:1 1 0;min-width:0;flex-direction:column;justify-content:center;gap:4px;padding:9px 4px 7px;border:0;background:rgba(255,255,255,.06);font-size:12px;line-height:15px;white-space:nowrap}',
+    '.sr-note.sr-tiles .sr-btn svg{width:18px;height:18px}',
+    '.sr-note-title{font-weight:600;font-size:15px;line-height:21px}'
+  ].join('\n');
+
+  var favorites = [];
+  var history = [];
+  var autoBackup = { on: false }; // from the app: {on, folder, file, lastSaved, error, reconnect, restoreOffer}   // songs listened to, oldest first (favoritedAt = when played)
+  var resumeAfterLoad = null; // playlist to continue once the app has sent the favorites
+  var sheet = null; // {root, backdrop, panel, list, sub, playBtn, shuffleBtn}
+  var tab = null;
+  var dice = null;
+  var moon = null;
+  var help = null;
+  var tape = null;
+  var renderPending = false;
+
+  function np() { return window.__soulectionNowPlaying || null; }
+  function npState() { var n = np(); return n ? n.state() : null; }
+  function native(msg) {
+    try { window.SRBridge.postMessage(JSON.stringify(msg)); } catch (e) {}
+  }
+  function text(el) { return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
+  function parseTimestamp(s) {
+    var m = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(s);
+    if (!m) return null;
+    return m[3] == null ? +m[1] * 60 + +m[2] : +m[1] * 3600 + +m[2] * 60 + +m[3];
+  }
+  function showNumber(s) { var m = /#\s*(\d+)/.exec(s || ''); return m ? m[1] : null; }
+  function favId(url, start) { return url + '#' + Math.round(start); }
+  function byId(id) {
+    for (var i = 0; i < favorites.length; i++) if (favorites[i].id === id) return favorites[i];
+    return null;
+  }
+  function historyById(id) {
+    for (var i = 0; i < history.length; i++) if (history[i].id === id) return history[i];
+    return null;
+  }
+  function sourceList(source) { return source === 'history' ? history : favorites; }
+  function lookup(source, id) {
+    if (source === 'history') return historyById(id);
+    if (source === 'mixtape') {
+      var items = (playlist && playlist.items) || [];
+      for (var i = 0; i < items.length; i++) if (items[i].id === id) return items[i];
+      return null;
+    }
+    return byId(id);
+  }
+  function ago(ms) {
+    var s = Math.max(0, (Date.now() - ms) / 1000);
+    if (s < 60) return 'Just now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    if (s < 172800) return 'Yesterday';
+    if (s < 604800) return Math.floor(s / 86400) + 'd ago';
+    return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  function el(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // Saves or removes a song. The app keeps the list; this updates the hearts right
+  // away and the app's reply replaces the list.
+  function toggle(fav, quiet) {
+    var existing = byId(fav.id);
+    if (existing) favorites = favorites.filter(function (f) { return f.id !== fav.id; });
+    else favorites = favorites.concat([fav]);
+    native({ op: 'toggle', favorite: fav });
+    if (!quiet) {
+      announce(existing ? 'Removed from Likes' : 'Added to Likes');
+    }
+    schedule();
+  }
+  function remove(id) {
+    favorites = favorites.filter(function (f) { return f.id !== id; });
+    native({ op: 'remove', id: id });
+    schedule();
+  }
+  function removeHistory(id) {
+    history = history.filter(function (f) { return f.id !== id; });
+    native({ op: 'historyRemove', id: id });
+    schedule();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Accessibility helpers
+  // ---------------------------------------------------------------------------
+  var reduceMotion = false;
+  try {
+    var rm = window.matchMedia('(prefers-reduced-motion: reduce)');
+    reduceMotion = rm.matches;
+    rm.addEventListener && rm.addEventListener('change', function () { reduceMotion = rm.matches; });
+  } catch (e) {}
+
+  // Panels act like proper pop-ups: focus moves into them, Tab stays inside, Escape
+  // closes them, and focus goes back to where it was when they close.
+  var dialogs = []; // [{panel, close, back}]
+  function focusables(node) {
+    return Array.prototype.filter.call(
+      node.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])'),
+      function (n) { return !n.disabled && !n.hidden && n.offsetParent !== null; });
+  }
+  // Keyboard or touch? With a keyboard, focus goes to a panel's first button (and shows
+  // its outline); with touch, to the panel itself, so no outline flashes around a button.
+  var usingKeyboard = false;
+  document.addEventListener('keydown', function (e) { if (e.key === 'Tab' || e.key.indexOf('Arrow') === 0) usingKeyboard = true; }, true);
+  ['pointerdown', 'touchstart'].forEach(function (t) { document.addEventListener(t, function () { usingKeyboard = false; }, { capture: true, passive: true }); });
+  function focusInside(panel, first) {
+    if (usingKeyboard && first) { try { first.focus({ preventScroll: true }); } catch (e) {} return; }
+    if (!panel.hasAttribute('tabindex')) panel.setAttribute('tabindex', '-1');
+    panel.style.outline = 'none';
+    try { panel.focus({ preventScroll: true }); } catch (e) {}
+  }
+  function dialogOpened(panel, close) {
+    dialogClosed(panel, true);
+    panel.setAttribute('aria-modal', 'true');
+    dialogs.push({ panel: panel, close: close, back: document.activeElement });
+    setTimeout(function () {
+      var first = panel.querySelector('.sr-x') || focusables(panel)[0];
+      if (dialogs.length && dialogs[dialogs.length - 1].panel === panel) focusInside(panel, first);
+    }, 60);
+  }
+  function dialogClosed(panel, quiet) {
+    for (var i = dialogs.length - 1; i >= 0; i--) {
+      if (dialogs[i].panel !== panel) continue;
+      var d = dialogs.splice(i, 1)[0];
+      if (!quiet && usingKeyboard && d.back && d.back.focus && d.back.isConnected) {
+        try { d.back.focus({ preventScroll: true }); } catch (e) {}
+      }
+    }
+  }
+  document.addEventListener('keydown', function (e) {
+    // A message with buttons (like "Share / Find on Spotify") closes first.
+    if (e.key === 'Escape' && note && note.__sticky && note.querySelector('button')) { e.preventDefault(); hideNote(); return; }
+    if (!dialogs.length) return;
+    var top = dialogs[dialogs.length - 1];
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      // In the big player, Escape first closes the Songs list, then the player.
+      if (fp && top.panel === fp.root && fp.root.classList.contains('sr-np-songs-open')) { setSongsOpen(false); return; }
+      top.close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    var items = focusables(top.panel);
+    if (!items.length) return;
+    var first = items[0], last = items[items.length - 1];
+    if (!top.panel.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }, true);
+  function closeButton(close, label) {
+    var b = el('button', 'sr-x', CLOSE_X);
+    b.type = 'button';
+    b.setAttribute('aria-label', label || 'Close');
+    b.addEventListener('click', function (e) { e.stopPropagation(); close(); });
+    return b;
+  }
+  // A tappable area that isn't a button gets a role, a label and Enter/Space.
+  function keyClickable(node, label) {
+    node.setAttribute('role', 'button');
+    node.setAttribute('tabindex', '0');
+    if (label) node.setAttribute('aria-label', label);
+    node.addEventListener('keydown', function (e) {
+      if (e.target !== node || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      node.click();
+    });
+  }
+  // Spoken by VoiceOver (polite: after whatever it's saying now).
+  var liveEl = null;
+  function announce(text) {
+    if (!document.body || !text) return;
+    if (!liveEl || !liveEl.isConnected) {
+      liveEl = el('div', 'sr-live');
+      liveEl.setAttribute('aria-live', 'polite');
+      liveEl.setAttribute('role', 'status');
+      document.body.appendChild(liveEl);
+    }
+    liveEl.textContent = '';
+    setTimeout(function () { liveEl.textContent = text; }, 80);
+  }
+  var announcedId = null;
+  function announceSong() {
+    var t = (playlist && playlist.current) || currentTrack();
+    var st = npState();
+    if (!t || !st || st.paused !== false || t.id === announcedId) return;
+    announcedId = t.id;
+    announce('Now playing: ' + t.song + (t.artist ? ' by ' + t.artist : ''));
+  }
+  // A light tap you can feel (hearts, timers).
+
+  // Share, or find the song on Spotify / Apple Music.
+  var menuTrigger = null; // the ... button whose menu is open
+  // Share, Spotify, Apple Music for a song: [label, action, icon, spoken label].
+  function songButtons(f) {
+    return [
+      ['Share', function () {
+        var url = 'https://radio.soulection.com' + (f.episodeURL || '');
+        var when = f.start != null ? ' at ' + clock(f.start) : '';
+        native({ op: 'share', text: f.song + (f.artist ? ' by ' + f.artist : '') + ' (' + (f.show || 'Soulection Radio') + when + ')', url: url });
+      }, SHARE, 'Share this song'],
+      // The app opens the song in Spotify (its search) or Apple Music (the song itself).
+      ['Spotify', function () { native({ op: 'findSong', service: 'spotify', song: f.song || '', artist: f.artist || '' }); }, NOTE, 'Find on Spotify'],
+      ['Apple Music', function () { native({ op: 'findSong', service: 'apple', song: f.song || '', artist: f.artist || '' }); }, NOTE, 'Find on Apple Music']
+    ];
+  }
+  function songActions(f, extra, trigger) {
+    if (trigger && menuTrigger === trigger && note) { hideNote(); return; } // tap again: close
+    var buttons = songButtons(f);
+    (extra || []).forEach(function (b) { buttons.push(b); });
+    noteWithButtons('<div class="sr-note-title">' + esc(f.song || '') + '</div><div>' + esc(f.artist || '') + '</div>', buttons);
+    if (!note) return;
+    var menu = note;
+    menu.classList.add('sr-tiles');
+    // The ... button stays lit while its menu is open; tapping it again, tapping
+    // anywhere else, or Escape closes the menu.
+    var outside = function (e) {
+      if (menu.contains(e.target) || (trigger && trigger.contains(e.target))) return;
+      if (note === menu) hideNote();
+    };
+    if (trigger) {
+      menuTrigger = trigger;
+      trigger.classList.add('sr-on');
+      trigger.setAttribute('aria-expanded', 'true');
+    }
+    setTimeout(function () { document.addEventListener('click', outside, true); }, 0);
+    menu.__onHide = function () {
+      document.removeEventListener('click', outside, true);
+      if (trigger) {
+        trigger.classList.remove('sr-on');
+        trigger.setAttribute('aria-expanded', 'false');
+      }
+      if (menuTrigger === trigger) menuTrigger = null;
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Listening history: a song is saved as soon as it starts playing.
+  // ---------------------------------------------------------------------------
+  var listen = null; // {track, played: seconds heard so far, last: ms, done}
+  function followListening(st) {
+    if (direct && playlist && playlist.current) {
+      var f = playlist.current;
+      if (arriving || (listen && listen.track.id === f.id && listen.done)) return;
+      listen = { track: f, done: true, played: 0, last: Date.now(), lastT: st && st.t };
+      var entry = {};
+      for (var k in f) entry[k] = f[k];
+      entry.favoritedAt = Date.now();
+      history = history.filter(function (h) { return h.id !== entry.id; }).concat([entry]);
+      native({ op: 'played', favorite: entry });
+      schedule();
+      return;
+    }
+    var t = currentTrack();
+    if (!t || !st) { listen = null; return; }
+    var now = Date.now();
+    if (!listen || listen.track.id !== t.id) listen = { track: t, played: 0, last: now, lastT: st.t, done: false };
+    // Count time only while it's actually playing (the position must be moving too,
+    // in case the player hasn't reported paused/playing).
+    var moving = st.t != null && listen.lastT != null && st.t > listen.lastT;
+    var playing = st.paused === false || (st.paused == null && moving);
+    listen.last = now;
+    listen.lastT = st.t;
+    // Saved the moment it starts playing, like Spotify's Recently played, but only
+    // once playback is really inside this song's timestamps (not the intro before the
+    // first song), and not while a playlist or Mixtape is still jumping to its song
+    // (playback can pass over the neighbouring songs on the way).
+    if (listen.done || !playing) return;
+    var inRange = st.t != null && st.t >= t.start - 0.5 && (t.end == null || st.t < t.end);
+    if (!inRange) return;
+    if (playlist && (arriving || !playlist.current || playlist.current.id !== t.id)) return;
+    listen.done = true;
+    var entry = {};
+    for (var k in t) entry[k] = t[k];
+    entry.start = Number(entry.start) || 0;
+    entry.cover = entry.cover || '';
+    entry.favoritedAt = now;
+    history = history.filter(function (h) { return h.id !== entry.id; }).concat([entry]);
+    native({ op: 'played', favorite: entry });
+    schedule();
+  }
+
+  window.__soulectionFavorites = {
+    toast: function (message) { showToast(message); },
+    // A phone call (or another app's audio) paused the music; when it's over, carry on
+    // if it was playing just before.
+    interrupted: function (began) {
+      if (began) {
+        wasPlayingBeforeCall = Date.now() - lastPlayingAt < 3000;
+        return;
+      }
+      if (!wasPlayingBeforeCall) return;
+      wasPlayingBeforeCall = false;
+      [500, 1500, 3000].forEach(function (ms) {
+        setTimeout(function () {
+          var st = npState();
+          if (st && st.paused === false) return;
+          var n = np();
+          n && n.play();
+        }, ms);
+      });
+    },
+    pickSavedFile: function (restored, reason) { pickSavedFileNote(restored, reason); },
+    canGoBack: function (v, f) { canBack = !!v; canForward = !!f; setBackState(); },
+    sleepFired: function () { sleep = null; saveSleep(); renderMoon(); },
+    receive: function (list, opts) {
+      favorites = Array.isArray(list) ? list : [];
+      if (opts && typeof opts.build === 'string') buildLabel = opts.build;
+      if (opts && 'newShowCheck' in opts) newShowCheck = opts.newShowCheck;
+      if (opts && Array.isArray(opts.history)) history = opts.history;
+      if (opts && Array.isArray(opts.continueListening)) mergeContinue(opts.continueListening);
+      if (opts && opts.autoBackup) {
+        autoBackup = opts.autoBackup;
+        if (opts.welcome) showWelcome();
+        else if (!askedNotify) { askedNotify = true; setTimeout(function () { native({ op: 'notifyPermission' }); }, 3000); }
+        if (autoBackup.restoreOffer) {
+          if (welcomeOpen) restoreAfterWelcome = true; else offerRestore();
+        }
+        if (autoBackup.reconnect) offerReconnect();
+      }
+      // Back from "Export first": show the final warning again.
+      if (clearAfterExport) { clearAfterExport = false; setTimeout(clearStepTwo, 400); }
+      if (opts && opts.backupDue) maybeRemindBackup();
+      if (resumeAfterLoad) {
+        playlist = resumeAfterLoad;
+        resumeAfterLoad = null;
+        playCurrent();
+      }
+      schedule();
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Backup reminder and short messages
+  // ---------------------------------------------------------------------------
+  var note = null, noteTimer = null, reminded = false;
+  var waitingToasts = [];
+  function showNote(html, ms) {
+    if (!document.body) return null;
+    // A message that waits for an answer (like the backup reminder) isn't pushed away
+    // by a short one; the short one shows after it closes.
+    if (note && note.__sticky && ms) { waitingToasts.push([html, ms]); return null; }
+    if (note && note.__sticky && note.__onReplaced) note.__onReplaced();
+    if (note) note.remove();
+    clearTimeout(noteTimer);
+    note = el('div', 'sr-note', html);
+    note.__sticky = !ms;
+    note.setAttribute('role', 'status');
+    document.body.appendChild(note);
+    void note.offsetHeight;
+    note.classList.add('sr-show');
+    if (ms) noteTimer = setTimeout(hideNote, ms);
+    return note;
+  }
+  function hideNote() {
+    clearTimeout(noteTimer);
+    if (!note) return;
+    var n = note;
+    note = null;
+    if (n.__onHide) n.__onHide();
+    n.classList.remove('sr-show');
+    setTimeout(function () { n.remove(); }, 250);
+    if (waitingToasts.length) {
+      var next = waitingToasts.shift();
+      setTimeout(function () { showNote(next[0], next[1]); }, 300);
+    }
+  }
+  // Short messages stay up long enough to read (and for VoiceOver to read them out).
+  function showToast(message) { showNote('<div>' + esc(message) + '</div>', 5000); }
+  // Every few new favorites, suggest exporting a backup (once per page load).
+  function maybeRemindBackup() {
+    // Also when auto-backup is on but failing: nothing is being saved then.
+    if (reminded || welcomeOpen || (autoBackup.on && !autoBackup.error)) return;
+    reminded = true;
+    var failing = autoBackup.on && autoBackup.error;
+    var n = showNote(failing
+      ? '<div class="sr-note-title">Auto-backup isn\'t saving</div>' +
+        '<div>Your newest Likes aren\'t in your backup file yet. Set auto-backup up again to keep them safe.</div>' +
+        '<div class="sr-actions"></div>'
+      : '<div class="sr-note-title">Back up your Likes?</div>' +
+        '<div>Save a backup file in Google Drive: pick a folder, then tap <b>Save</b>. The app keeps it up to date, so your Likes and History are safe even if you delete the app.</div>' +
+        '<div class="sr-actions"></div>', 0);
+    if (!n) { reminded = false; return; }
+    // Pushed away by another message before you answered: it can come back.
+    n.__onReplaced = function () { reminded = false; };
+    var actions = n.querySelector('.sr-actions');
+    var onBtn = el('button', 'sr-btn', CLOUD + '<span>' + (failing ? 'Set up again' : 'Turn on') + '</span>');
+    var laterBtn = el('button', 'sr-btn', '<span>Later</span>');
+    onBtn.type = laterBtn.type = 'button';
+    // The note already says what happens, so this goes straight to the save screen.
+    onBtn.addEventListener('click', function () { hideNote(); native({ op: 'backupCreate' }); });
+    laterBtn.addEventListener('click', function () { hideNote(); native({ op: 'backupLater' }); });
+    actions.appendChild(onBtn);
+    actions.appendChild(laterBtn);
+  }
+
+  // After a reinstall (nothing saved yet), offer to bring a backup back.
+  var restoreShown = false;
+  function offerRestore() {
+    if (restoreShown) return;
+    if (welcomeOpen) { restoreAfterWelcome = true; return; }
+    restoreShown = true;
+    setTimeout(function () {
+      var n = showNote(
+        '<div class="sr-note-title">Restore your Likes and History?</div>' +
+        '<div>If you used backup before, pick your backup file, <b>Soulection Radio Backup.json</b> (usually in Google Drive or Downloads). Your songs come back and backup stays on.</div>' +
+        '<div class="sr-actions"></div>', 0);
+      if (!n) return;
+      var actions = n.querySelector('.sr-actions');
+      var pickBtn = el('button', 'sr-btn', IMPORT + '<span>Pick my backup file</span>');
+      var noBtn = el('button', 'sr-btn', '<span>Not now</span>');
+      pickBtn.type = noBtn.type = 'button';
+      pickBtn.addEventListener('click', function () { hideNote(); native({ op: 'restoreBackup' }); });
+      noBtn.addEventListener('click', function () { hideNote(); native({ op: 'restoreDismissed' }); });
+      actions.appendChild(pickBtn);
+      actions.appendChild(noBtn);
+    }, 1500);
+  }
+
+  // After an app update iOS can stop the app writing to the backup file until it's picked
+  // again. Backup stays on; one tap opens the picker in that folder.
+  // Your songs are always backed up on this iPhone, so this only comes up now and then
+  // (at most once a week), not on every launch.
+  var reconnectShown = false, RECONNECT_KEY = 'sr-reconnect-asked';
+  function offerReconnect() {
+    if (reconnectShown) return;
+    try { if (Date.now() - (parseFloat(localStorage.getItem(RECONNECT_KEY)) || 0) < 7 * 864e5) return; } catch (e) {}
+    if (welcomeOpen) { setTimeout(offerReconnect, 2000); return; }
+    reconnectShown = true;
+    setTimeout(function () {
+      if (!autoBackup.reconnect) return; // it came back by itself
+      try { localStorage.setItem(RECONNECT_KEY, String(Date.now())); } catch (e) {}
+      var n = showNote(
+        '<div class="sr-note-title">Drive backup paused</div>' +
+        '<div>Your songs are still backed up on this phone (Downloads → Soulection). To keep the Drive copy going too:</div>' +
+        '<div>Tap Reconnect and pick <b>' + esc(autoBackup.file || 'Soulection Radio Backup.json') + '</b>. Your songs stay as they are.</div>' +
+        '<div>Can\'t find it? Tap <b>New backup</b> to save a fresh one.</div>' +
+        (autoBackup.why ? '<div class="sr-note-why">What Android said: ' + esc(autoBackup.why) + '</div>' : '') +
+        '<div class="sr-actions"></div>', 0);
+      if (!n) { reconnectShown = false; return; }
+      n.__onReplaced = function () { reconnectShown = false; };
+      var actions = n.querySelector('.sr-actions');
+      var goBtn = el('button', 'sr-btn', IMPORT + '<span>Reconnect</span>');
+      var newBtn = el('button', 'sr-btn', CLOUD + '<span>New backup</span>');
+      var laterBtn = el('button', 'sr-btn', '<span>Later</span>');
+      goBtn.type = newBtn.type = laterBtn.type = 'button';
+      goBtn.addEventListener('click', function () { hideNote(); native({ op: 'backupReconnect' }); });
+      newBtn.addEventListener('click', function () { hideNote(); native({ op: 'backupCreate' }); });
+      laterBtn.addEventListener('click', function () { hideNote(); });
+      actions.appendChild(goBtn);
+      actions.appendChild(newBtn);
+      actions.appendChild(laterBtn);
+    }, 2500);
+  }
+
+  // Backup is paused: pick the same file again, or save a new one.
+  function chooseReconnect() {
+    noteWithButtons(
+      '<div class="sr-note-title">Drive backup paused</div>' +
+      '<div>Tap <b>Reconnect</b> and pick <b>' + esc(autoBackup.file || 'Soulection Radio Backup.json') + '</b>. Or save a new backup file instead.</div>',
+      [['Reconnect', function () { native({ op: 'backupReconnect' }); }, IMPORT],
+       ['Save a new backup', function () { native({ op: 'backupCreate' }); }, CLOUD],
+       ['Cancel', null]]);
+  }
+
+  // Turn on / Change: save a new backup file, or pick the one you already have.
+  function chooseAutoBackup() {
+    var save = ['Save a backup file', function () { native({ op: 'backupCreate' }); }, CLOUD];
+    var pick = ['Pick my backup file', function () { native({ op: 'restoreBackup' }); }, IMPORT];
+    var empty = !favorites.length && !history.length;
+    noteWithButtons(
+      '<div class="sr-note-title">Back up your Likes and History</div>' +
+      '<div><b>New here?</b> Tap Save a backup file, pick a folder (Google Drive is best), then tap <b>Save</b>.</div>' +
+      '<div><b>Have a backup already?</b> Tap Pick my backup file and choose <b>Soulection Radio Backup.json</b>.</div>' +
+      '<div>Either way, the app keeps that file up to date from then on.</div>',
+      (empty ? [pick, save] : [save, pick]).concat([['Cancel', null]]));
+  }
+  // Only when iOS won't let the app write to a picked backup file: the save screen opens
+  // next, and saving it back once keeps backup going.
+  function pickSavedFileNote(restored, reason) {
+    showNote('<div class="sr-note-title">' + (restored > 0 ? 'Restored ' + restored + (restored === 1 ? ' song' : ' songs') : 'Backup read') + '. One more step</div>' +
+      (reason
+        ? '<div>Your phone didn\'t let the app update that file directly. To keep backing up, save a copy: choose a folder and tap Save.</div>'
+        : '<div>Now save it: choose a folder and tap <b>Save</b>. Backup carries on from there.</div>') +
+      (reason ? '<div class="sr-note-why">What Android said: ' + esc(reason) + '</div>' : ''), 15000);
+  }
+
+  function renderAutoBackup() {
+    if (!sheet || !sheet.autoText) return;
+    var html, btn;
+    if (autoBackup.on && autoBackup.reconnect) {
+      html = 'Auto-backup: <b>on</b> (this phone) · Drive copy paused';
+      btn = 'Reconnect';
+    } else if (autoBackup.on) {
+      var when = autoBackup.lastSaved ? ' · saved ' + ago(autoBackup.lastSaved).toLowerCase() : '';
+      html = autoBackup.error
+        ? 'Auto-backup: <b>can\'t reach ' + esc(autoBackup.folder || 'folder') + '</b>'
+        : 'Auto-backup: <b>on</b> · ' + esc(autoBackup.folder || '') + esc(when);
+      btn = 'Change';
+    } else {
+      html = 'Auto-backup: <b>this phone only</b>';
+      btn = 'Turn on';
+    }
+    if (sheet.autoText.innerHTML !== html) sheet.autoText.innerHTML = html;
+    var span = sheet.autoBtn.querySelector('span');
+    if (span.textContent !== btn) span.textContent = btn;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Page structure (radio.soulection.com, as probed)
+  // ---------------------------------------------------------------------------
+  function miniPlayer() {
+    var slider = document.querySelector('[role="slider"][aria-valuenow]');
+    if (!slider) return null;
+    for (var e = slider; e && e !== document.body; e = e.parentElement) {
+      if (e.querySelector('img') && /\bfixed\b/.test(e.className || '')) return e;
+    }
+    return null;
+  }
+
+  function episodePath() {
+    return /^\/episodes\/[^/]+\/?$/.test(location.pathname) ? location.pathname.replace(/\/$/, '') : null;
+  }
+
+  function pageRows(doc) {
+    var rows = (doc || document).querySelectorAll('.col-span-full.grid');
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+      var spans = rows[i].querySelectorAll(':scope > span');
+      if (spans.length < 3) continue;
+      var start = parseTimestamp(text(spans[0]));
+      if (start == null) continue;
+      var artist = text(rows[i].querySelector('a[href*="/artists/"]')) || text(spans[1]);
+      var song = text(rows[i].querySelector('a[href*="/songs/"]')) || text(spans[2]);
+      // Voice-over rows ("VO - Joe Kay") are the host talking, not a song: they
+      // stay in the list (for next-song timing) but get no heart.
+      var vo = !song || isVoiceOver(artist);
+      if (!song) { song = artist; artist = ''; }
+      out.push({ row: rows[i], songCell: spans[2], start: start, artist: artist, song: song, vo: vo });
+    }
+    out.sort(function (a, b) { return a.start - b.start; });
+    return out;
+  }
+
+  function isVoiceOver(artist) { return /^\s*VO\b/i.test(artist || ''); }
+
+  function pageEpisodeInfo() {
+    var h1 = document.querySelector('#episode-card-header h1, main h1');
+    var number = showNumber(text(h1));
+    var img = document.querySelector('#episode-card-header img');
+    var st = npState();
+    var show = st && st.number && st.number === number && st.show ? st.show : (number ? 'Show #' + number : text(h1));
+    return { show: show, cover: img ? img.src : '' };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hearts
+  // ---------------------------------------------------------------------------
+  function heartButton(cls) {
+    var b = el('button', 'sr-heart ' + cls, HEART);
+    b.type = 'button';
+    return b;
+  }
+  function setHeart(b, on, label) {
+    var v = on ? 'true' : 'false';
+    if (b.getAttribute('aria-pressed') !== v) b.setAttribute('aria-pressed', v);
+    var l = (on ? 'Unlike ' : 'Like ') + label;
+    if (b.getAttribute('aria-label') !== l) b.setAttribute('aria-label', l);
+  }
+
+  function renderRowHearts() {
+    var path = episodePath();
+    if (!path) return;
+    var rows = pageRows();
+    if (!rows.length) return;
+    var info = null;
+    rows.forEach(function (r, i) {
+      if (!r.row.hasAttribute('data-sr-row')) r.row.setAttribute('data-sr-row', '');
+      var b = r.songCell.querySelector(':scope > .sr-heart');
+      if (r.vo) { if (b) b.remove(); return; }
+      if (!b) {
+        b = heartButton('sr-heart-row');
+        b.addEventListener('click', function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var current = pageRows();
+          var me = null, next = null;
+          for (var j = 0; j < current.length; j++) {
+            if (current[j].songCell === b.parentElement) { me = current[j]; next = current[j + 1] || null; }
+          }
+          if (!me) return;
+          var meta = pageEpisodeInfo();
+          toggle({
+            id: favId(path, me.start), song: me.song, artist: me.artist, show: meta.show,
+            episodeURL: path, cover: meta.cover, start: me.start, end: next ? next.start : null,
+            favoritedAt: Date.now()
+          });
+        });
+      }
+      if (!r.songCell.classList.contains('sr-song-cell')) r.songCell.classList.add('sr-song-cell');
+      if (b !== r.songCell.lastElementChild) r.songCell.appendChild(b); // keep it after the song
+      setHeart(b, !!byId(favId(path, r.start)), r.song);
+    });
+  }
+
+  // The tracklist entry playing now (voice-overs included), or null.
+  function rawTrack() {
+    var st = npState();
+    if (!st || !st.tracks || st.index == null || st.index < 0) return null;
+    return st.tracks[st.index] || null;
+  }
+  // Song number i of the show that's playing, as a Like (null for a voice-over, which
+  // gets no heart, or when it isn't known).
+  function trackFavorite(st, i) {
+    var t = st && st.episodeURL && st.tracks && i != null && i >= 0 ? st.tracks[i] : null;
+    if (!t || !t.title || isVoiceOver(t.artist)) return null;
+    var next = st.tracks[i + 1];
+    return {
+      id: favId(st.episodeURL, t.start), song: t.title || t.artist, artist: t.title ? t.artist : '', show: st.show || ('Show #' + st.number),
+      episodeURL: st.episodeURL, cover: st.cover, start: t.start, end: next ? next.start : null
+    };
+  }
+  function currentTrack() { var st = npState(); return trackFavorite(st, st && st.index); }
+
+  // The site's × (close) button on the mini player: found by its label or text, or as
+  // a small button sitting on the card's top-right corner.
+  function hideMiniClose(player) {
+    var scope = player.parentElement || player;
+    var pr = player.getBoundingClientRect();
+    var play = sitePlayButton();
+    var btns = scope.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) {
+      var b = btns[i];
+      if (b === play || b.closest('.sr-fav-root') || /\bsr-/.test(b.className || '')) continue;
+      if (b.getAttribute('data-sr-hidden')) continue;
+      var label = (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '');
+      var r = b.getBoundingClientRect();
+      var cornerish = r.width > 0 && r.width <= 48 && r.height <= 48 &&
+        Math.abs(r.right - pr.right) < 36 && Math.abs(r.top - pr.top) < 36;
+      if (/close|dismiss|×|✕/i.test(label) || (cornerish && b !== play && !b.closest('[role="slider"]'))) {
+        b.setAttribute('data-sr-hidden', '1');
+        b.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }
+  // On iPad the site shows the mini player as a small card in the corner; make it
+  // span the bottom edge like on iPhone.
+  function fullWidthMini(player) {
+    if (window.innerWidth < 640) {
+      if (player.getAttribute('data-sr-full')) {
+        ['left', 'right', 'bottom', 'width', 'max-width', 'border-radius', 'margin', 'transform'].forEach(function (p) { player.style.removeProperty(p); });
+        player.removeAttribute('data-sr-full');
+      }
+      return;
+    }
+    if (player.getAttribute('data-sr-full')) return;
+    player.setAttribute('data-sr-full', '1');
+    var set = function (p, v) { player.style.setProperty(p, v, 'important'); };
+    set('left', '0'); set('right', '0'); set('bottom', '0'); set('width', 'auto');
+    set('max-width', 'none'); set('border-radius', '0'); set('margin', '0'); set('transform', 'none');
+  }
+
+  // While the app's own player plays a show the site's mini player doesn't know about,
+  // its artwork, text, progress bar and times are hidden and the right song is drawn in
+  // exactly the same spots, sizes and fonts. Its heart and play button stay as they are.
+  var MINI_FONT = ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'color', 'fontVariantNumeric', 'textTransform'];
+  function copyFont(from, to) {
+    if (!from) return;
+    var cs = getComputedStyle(from);
+    MINI_FONT.forEach(function (k) { if (to.style[k] !== cs[k]) to.style[k] = cs[k]; });
+  }
+  function place(node, rect, base) {
+    var l = (rect.left - base.left) + 'px', t = (rect.top - base.top) + 'px';
+    var w = rect.width + 'px', h = rect.height + 'px';
+    if (node.style.left !== l) node.style.left = l;
+    if (node.style.top !== t) node.style.top = t;
+    if (node.style.width !== w) node.style.width = w;
+    if (node.style.height !== h) node.style.height = h;
+  }
+  function hideSite(node) { if (node && !node.hasAttribute('data-sr-mini-hide')) node.setAttribute('data-sr-mini-hide', ''); }
+  function renderMiniOverlay(player) {
+    var over = player.querySelector(':scope > .sr-mini-over');
+    // Also whenever a playlist plays: jumping to a song's spot leaves the site's own
+    // mini player frozen on the song before it.
+    var cur0 = playlist && playlist.current;
+    var shown = directShown && activeOurs() ? directShown : (cur0 ? { show: cur0.show, cover: cur0.cover } : null);
+    // Also whenever the app knows which song is playing: after a jump to a song (Up
+    // Next, a tracklist row) the site's own line stays on the song before it. Its show
+    // line and cover are kept exactly as the site shows them.
+    var raw = rawTrack();
+    if (!shown && raw) {
+      var sImg = player.querySelector('img:not(.sr-mo-img)');
+      var sLine = player.querySelector('.content-col > div');
+      var st0 = npState() || {};
+      shown = { show: (sLine && text(sLine)) || st0.show || '', cover: (sImg && (sImg.currentSrc || sImg.src)) || st0.cover || '' };
+    }
+    var on = !!shown;
+    if (player.classList.contains('sr-mini-direct') !== on) player.classList.toggle('sr-mini-direct', on);
+    if (!on) { if (over) over.remove(); return; }
+    if (!over) {
+      over = el('div', 'sr-mini-over',
+        '<img class="sr-mo-img" alt="">' +
+        '<div class="sr-mo-text"><div class="sr-mo-show"></div><div class="sr-mo-line"><span class="sr-mo-song"></span> <span class="sr-mo-artist"></span></div></div>' +
+        '<div class="sr-mo-bar"><div class="sr-mo-track"><div class="sr-mo-fill"></div></div><div class="sr-mo-knob"></div></div>' +
+        '<span class="sr-mo-time sr-mo-el"></span><span class="sr-mo-time sr-mo-dur"></span>' +
+        '<button type="button" class="sr-mo-play" aria-label="Play"></button>');
+      over.__born = Date.now();
+      over.querySelector('.sr-mo-play').addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        togglePlay();
+        renderMiniOverlay(player);
+      });
+      ['.sr-mo-img', '.sr-mo-text', '.sr-mo-bar'].forEach(function (sel) {
+        over.querySelector(sel).addEventListener('click', function (e) { e.stopPropagation(); openPlayer(); });
+      });
+      over.querySelector('.sr-mo-img').setAttribute('aria-hidden', 'true');
+      over.querySelector('.sr-mo-bar').setAttribute('aria-hidden', 'true');
+      keyClickable(over.querySelector('.sr-mo-text'), 'Open player');
+      addSkipButtons(over);
+      player.appendChild(over);
+    }
+    var base = player.getBoundingClientRect();
+    // Measuring the site's layout is the costly part: only redo it when the card
+    // changed size or every few seconds, not on every update (keeps scrolling smooth).
+    var siteImg = player.querySelector('img:not(.sr-mo-img)');
+    var col = player.querySelector('.content-col');
+    var thumb = player.querySelector('[role="slider"]');
+    var root = thumb && (thumb.closest('[data-orientation="horizontal"]') || thumb.parentElement);
+    var times = player.querySelectorAll('[data-sr-time]:not(.sr-mo-time)');
+    var siteBtn = sitePlayButton();
+    // Hidden every time: the site redraws its mini player now and then.
+    [siteImg, col, root, siteBtn, times[0], times[1]].forEach(hideSite);
+    var nodes = [siteImg, col, root, siteBtn, times[0], times[1]];
+    var sameNodes = over.__nodes && nodes.every(function (n, i) { return n === over.__nodes[i]; });
+    over.__nodes = nodes;
+    var layoutKey = Math.round(base.width) + 'x' + Math.round(base.height);
+    // Right after it appears the site's player is still sliding in and loading, so
+    // measure on every update for the first few seconds.
+    var relayout = !sameNodes || over.__key !== layoutKey || !over.__at || Date.now() - over.__at > 3000 ||
+      Date.now() - (over.__born || 0) < 5000;
+    if (relayout) { over.__key = layoutKey; over.__at = Date.now(); }
+    var st = npState() || {};
+    var cur = playlist && playlist.current;
+    var t = currentTrack();
+    var rt = !cur && !t ? rawTrack() : null; // a voice-over: no heart, but still named
+    var song = cur ? cur.song : (t ? t.song : (rt ? rt.title || rt.artist || '' : ''));
+    var artist = cur ? cur.artist : (t ? t.artist : (rt && rt.title ? rt.artist || '' : ''));
+    var set = function (sel, v) { var n = over.querySelector(sel); if (n.textContent !== v) n.textContent = v; return n; };
+
+    // Artwork
+    var img = over.querySelector('.sr-mo-img');
+    if (siteImg && relayout) {
+      place(img, siteImg.getBoundingClientRect(), base);
+      var r = getComputedStyle(siteImg).borderRadius;
+      if (img.style.borderRadius !== r) img.style.borderRadius = r;
+    }
+    if (shown.cover && img.getAttribute('src') !== shown.cover) img.src = shown.cover;
+
+    // Show line and song
+    var textBox = over.querySelector('.sr-mo-text');
+    if (col && relayout) {
+      place(textBox, col.getBoundingClientRect(), base);
+      var lines = col.querySelectorAll(':scope > div');
+      copyFont(lines[0], over.querySelector('.sr-mo-show'));
+      copyFont(lines[1], over.querySelector('.sr-mo-artist'));
+      copyFont((lines[1] && lines[1].querySelector('b, strong, span')) || lines[1], over.querySelector('.sr-mo-song'));
+      copyFont(lines[1], over.querySelector('.sr-mo-line'));
+    }
+    set('.sr-mo-show', shown.show || '');
+    set('.sr-mo-song', song || '');
+    set('.sr-mo-artist', artist || '');
+    if (col && relayout) {
+      // Measured while the site's text was still loading, its space can come out too
+      // short: always leave room for both lines, centred on the site's text.
+      var colRect = col.getBoundingClientRect();
+      var need = over.querySelector('.sr-mo-show').offsetHeight + over.querySelector('.sr-mo-line').offsetHeight;
+      if (need > colRect.height) {
+        var top = (colRect.top - base.top) - (need - colRect.height) / 2;
+        textBox.style.top = top + 'px';
+        textBox.style.height = need + 'px';
+      }
+    }
+    var openLabel = 'Open player: ' + (song || '') + (artist ? ' by ' + artist : '');
+    if (textBox.getAttribute('aria-label') !== openLabel) textBox.setAttribute('aria-label', openLabel);
+
+    // Progress bar
+    var dur = st.duration || 0, pos = st.t || 0;
+    var frac = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
+    var bar = over.querySelector('.sr-mo-bar');
+    if (root && relayout) {
+      place(bar, root.getBoundingClientRect(), base);
+      var siteTrack = root.firstElementChild && root.firstElementChild !== thumb ? root.firstElementChild : null;
+      var track = over.querySelector('.sr-mo-track');
+      if (siteTrack) {
+        var ts = getComputedStyle(siteTrack);
+        track.style.height = ts.height;
+        track.style.background = ts.backgroundColor;
+        track.style.borderRadius = ts.borderRadius;
+        var range = siteTrack.firstElementChild;
+        if (range) over.querySelector('.sr-mo-fill').style.background = getComputedStyle(range).backgroundColor;
+      }
+      var knob = over.querySelector('.sr-mo-knob');
+      var ks = getComputedStyle(thumb);
+      knob.style.width = ks.width; knob.style.height = ks.height;
+      knob.style.background = ks.backgroundColor; knob.style.borderRadius = ks.borderRadius;
+    }
+    over.querySelector('.sr-mo-knob').style.left = (frac * 100) + '%';
+    over.querySelector('.sr-mo-fill').style.width = (frac * 100) + '%';
+
+    // Play/pause: the site's button follows the site's (paused) player, so show the
+    // real state of the music that's playing.
+    var pb = over.querySelector('.sr-mo-play');
+    if (siteBtn) {
+      if (relayout) {
+        place(pb, siteBtn.getBoundingClientRect(), base);
+        var bs = getComputedStyle(siteBtn);
+        pb.style.color = bs.color;
+        var svg = siteBtn.querySelector('svg');
+        var sr = svg ? svg.getBoundingClientRect() : null;
+        pb.style.setProperty('--sr-icon', (sr && sr.width ? sr.width : 24) + 'px');
+      }
+      var want = playKey();
+      if (pb.getAttribute('data-icon') !== want) {
+        pb.setAttribute('data-icon', want);
+        pb.setAttribute('aria-label', want === 'loading' ? 'Starting' : want === 'play' ? 'Play' : 'Pause');
+        pb.innerHTML = want === 'loading' ? SPIN_LOGO : want === 'play'
+          ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>'
+          : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4h4.5v16H6zM13.5 4H18v16h-4.5z"/></svg>';
+      }
+    }
+
+    // Times, in the same spots and size as the site's (already enlarged 1.2x)
+    var mine = [over.querySelector('.sr-mo-el'), over.querySelector('.sr-mo-dur')];
+    var labels = [clock(pos).replace(/^0(\d:)/, '$1'), dur ? clock(dur).replace(/^0(\d:)/, '$1') : ''];
+    for (var i = 0; i < 2; i++) {
+      var siteT = times[i];
+      if (!siteT) { mine[i].hidden = true; continue; }
+      mine[i].hidden = false;
+      if (mine[i].textContent !== labels[i]) mine[i].textContent = labels[i];
+      if (!relayout) continue;
+      var tr = siteT.getBoundingClientRect();
+      var tl = (tr.left - base.left) + 'px', tt = (tr.top - base.top) + 'px';
+      if (i === 0) { mine[i].style.left = tl; mine[i].style.right = ''; }
+      else { mine[i].style.right = (base.right - tr.right) + 'px'; mine[i].style.left = ''; }
+      mine[i].style.top = tt;
+      copyFont(siteT, mine[i]);
+      if (mine[i].textContent !== labels[i]) mine[i].textContent = labels[i];
+    }
+  }
+
+  // The song the players show: the playlist's song while Likes, History or Mixtape
+  // plays, otherwise the one the site is on. Hearts follow the same song.
+  function songNow() {
+    var cur = playlist && playlist.current;
+    if (cur) { var c = {}; for (var k in cur) c[k] = cur[k]; return c; }
+    return currentTrack();
+  }
+  function renderMiniPlayer(player) {
+    if (!player) return;
+    if (readyCard) hideReadyCard(); // the site's own player is here now
+    if (player.style.touchAction !== 'none') player.style.touchAction = 'none';
+    hideMiniClose(player);
+    fullWidthMini(player);
+    // The tab on top of the mini player: swipe up (or tap) to open the big player.
+    addGrab(player);
+    if (miniTouchMove && player.__srMove !== miniTouchMove) {
+      player.addEventListener('touchmove', miniTouchMove, { passive: false });
+      player.__srMove = miniTouchMove;
+    }
+    renderMiniOverlay(player);
+    var row = player.querySelector('.content-col');
+    row = row && row.parentElement && row.parentElement.parentElement; // the top row (artwork, text, play button)
+    if (!row) return;
+    var b = row.querySelector(':scope > .sr-heart-mini');
+    if (!b) {
+      b = heartButton('sr-heart-mini');
+      b.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var t = songNow();
+        if (t) { t.favoritedAt = Date.now(); toggle(t); }
+      });
+      row.appendChild(b);
+      var playBtn = row.querySelector(':scope > button:not(.sr-heart)');
+      if (playBtn) playBtn.style.order = '2';
+    }
+    var t = songNow();
+    revealHeart(b, !!t);
+    if (!t) return;
+    setHeart(b, !!byId(t.id), t.song);
+  }
+
+  // Shows a heart when a song is known, hides it when not. No animation: it just appears.
+  function revealHeart(b, on) {
+    if (b.hidden === !on) return;
+    b.hidden = !on;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Favorites sheet
+  // ---------------------------------------------------------------------------
+  function buildSheet() {
+    if (sheet || !document.body) return;
+    var root = el('div', 'sr-fav-root');
+    var backdrop = el('div', 'sr-backdrop');
+    var panel = el('div', 'sr-sheet');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Likes');
+    backdrop.hidden = panel.hidden = true;
+    var head = el('div', 'sr-sheet-head');
+    head.appendChild(el('div', 'sr-sheet-grab'));
+    head.appendChild(closeButton(function () { closeSheet(); }));
+    var tabs = el('div', 'sr-tabs');
+    var favTab = el('button', 'sr-tabbtn', 'Likes');
+    var histTab = el('button', 'sr-tabbtn', 'History');
+    favTab.type = histTab.type = 'button';
+    favTab.addEventListener('click', function () { setMode('favorites'); });
+    histTab.addEventListener('click', function () { setMode('history'); });
+    tabs.appendChild(histTab);
+    tabs.appendChild(favTab);
+    head.appendChild(tabs);
+    var sub = el('div', 'sr-sheet-sub');
+    head.appendChild(sub);
+    var search = el('input', 'sr-search');
+    search.type = 'search';
+    search.setAttribute('enterkeyhint', 'search');
+    search.setAttribute('autocomplete', 'off');
+    search.addEventListener('input', function () { sheet.query = search.value; renderSheet(); });
+    head.appendChild(search);
+    var actions = el('div', 'sr-actions');
+    var playBtn = el('button', 'sr-btn', PLAY + '<span>Play in order</span>');
+    var shuffleBtn = el('button', 'sr-btn', SHUFFLE + '<span>Shuffle</span>');
+    playBtn.type = shuffleBtn.type = 'button';
+    playBtn.addEventListener('click', function () { startPlaylist('order', null, sheet.mode); });
+    shuffleBtn.addEventListener('click', function () { startPlaylist('shuffle', null, sheet.mode); });
+    var clearBtn = el('button', 'sr-btn sr-clear', '<span>Clear</span>');
+    clearBtn.type = 'button';
+    clearBtn.addEventListener('click', confirmClearHistory);
+    actions.appendChild(playBtn);
+    actions.appendChild(shuffleBtn);
+    actions.appendChild(clearBtn);
+    head.appendChild(actions);
+    var backup = el('div', 'sr-backup', '<span>Back up</span>');
+    var exportBtn = el('button', 'sr-btn', EXPORT + '<span>Export</span>');
+    var importBtn = el('button', 'sr-btn', IMPORT + '<span>Import</span>');
+    exportBtn.type = importBtn.type = 'button';
+    exportBtn.addEventListener('click', function () { native({ op: 'export' }); });
+    importBtn.addEventListener('click', function () { native({ op: 'import' }); });
+    backup.appendChild(exportBtn);
+    backup.appendChild(importBtn);
+    head.appendChild(backup);
+    var auto = el('div', 'sr-auto', '<span class="sr-auto-text"></span>');
+    var autoBtn = el('button', 'sr-btn', CLOUD + '<span></span>');
+    autoBtn.type = 'button';
+    autoBtn.addEventListener('click', function () {
+      if (autoBackup.on && autoBackup.reconnect) chooseReconnect(); else chooseAutoBackup();
+    });
+    auto.appendChild(autoBtn);
+    head.appendChild(auto);
+    var list = el('div', 'sr-list');
+    var cont = el('div', 'sr-continue', '<div class="sr-continue-title" aria-hidden="true">Continue listening</div><div class="sr-continue-row" role="group" aria-label="Continue listening"></div>');
+    cont.hidden = true;
+    cont.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('.sr-continue-item');
+      if (!b) return;
+      var entry = continueList().filter(function (x) { return x.path === b.getAttribute('data-path'); })[0];
+      if (entry) resumeShow(entry);
+    });
+    panel.appendChild(head);
+    panel.appendChild(cont);
+    panel.appendChild(list);
+    root.appendChild(backdrop);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+    backdrop.addEventListener('click', closeSheet);
+    sheet = { root: root, backdrop: backdrop, panel: panel, head: head, list: list, cont: cont, contKey: null, sub: sub, playBtn: playBtn, shuffleBtn: shuffleBtn, clearBtn: clearBtn, favTab: favTab, histTab: histTab, autoText: auto.querySelector('.sr-auto-text'), autoBtn: autoBtn, search: search, query: '', mode: 'history', key: '' };
+    attachPanelDrag(sheet, closeSheet);
+  }
+
+  function isOpen() { return panelIsOpen(sheet); }
+
+  // ---------------------------------------------------------------------------
+  // Continue listening: where you were in the last few shows you listened to (not
+  // Likes, History or Mixtape, which play single songs), once you've heard 20 seconds.
+  // Kept on this phone. A show you finished (or almost) drops off the list.
+  // ---------------------------------------------------------------------------
+  var CONTINUE_KEY = 'sr-continue';
+  function continueList() {
+    try { var l = JSON.parse(localStorage.getItem(CONTINUE_KEY) || '[]'); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+  }
+  function saveContinue(l) { try { localStorage.setItem(CONTINUE_KEY, JSON.stringify(l.slice(0, 6))); } catch (e) {} syncContinue(); }
+  // The app keeps a copy for backups: sent when the list of shows changes, and
+  // otherwise at most once a minute (the spots move every 10 seconds).
+  var contSent = null, contSentAt = 0;
+  function syncContinue(force) {
+    var l = continueList();
+    var key = l.map(function (x) { return x.path; }).join('|');
+    if (!force && key === contSent && Date.now() - contSentAt < 60000) return;
+    contSent = key;
+    contSentAt = Date.now();
+    native({ op: 'continue', list: l });
+  }
+  // The app's copy (after a restore or import, or if the website's storage was
+  // cleared): for a show in both, the more recent spot wins.
+  function mergeContinue(saved) {
+    var mine = continueList(), byPath = {};
+    mine.concat(saved).forEach(function (x) {
+      if (!x || !x.path) return;
+      if (!byPath[x.path] || (x.at || 0) > (byPath[x.path].at || 0)) byPath[x.path] = x;
+    });
+    var l = Object.keys(byPath).map(function (k) { return byPath[k]; }).sort(function (a, b) { return (b.at || 0) - (a.at || 0); }).slice(0, 6);
+    try { localStorage.setItem(CONTINUE_KEY, JSON.stringify(l)); } catch (e) {}
+    if (JSON.stringify(l) !== JSON.stringify(saved)) syncContinue(true);
+  }
+  function playingShowPath(st) {
+    return (directShown && activeOurs() && directShown.episodeURL) || (st && st.episodeURL) || '';
+  }
+  // Every 10 seconds while a show plays: remember where you are in it.
+  function noteListening() {
+    try {
+      var st = npState();
+      if (!st || st.paused !== false || playlist || starting) return;
+      var path = playingShowPath(st);
+      var t = st.t, d = st.duration;
+      if (!path || !(t > 0) || !(d > 0)) return;
+      var l = continueList().filter(function (x) { return x.path !== path; });
+      if (t >= 20 && t < d - 120) {
+        var shown = directShown && activeOurs() ? directShown : null;
+        l.unshift({ path: path, show: ((shown && shown.show) || st.show || ('Show #' + st.number)).split(' | ')[0],
+          cover: (shown && shown.cover) || st.cover || '', t: Math.floor(t), d: Math.floor(d), at: Date.now() });
+      }
+      saveContinue(l);
+    } catch (e) {}
+  }
+  setInterval(noteListening, 10000);
+
+  // ---------------------------------------------------------------------------
+  // Where you left off, like Spotify: what was playing (a show, or Likes / History /
+  // Mixtape with its songs) and where in it. Saved every 5 seconds while it plays and
+  // when you leave the app. Next time the app opens fresh (iOS ended it, or it was
+  // swiped away), the mini player shows it, paused; play carries on from there.
+  // ---------------------------------------------------------------------------
+  var LAST_KEY = 'sr-last-played';
+  function saveLast() {
+    try {
+      var st = npState();
+      if (!st || st.paused !== false || starting || !(st.t > 0)) return;
+      var cur = playlist && playlist.current;
+      var last;
+      if (cur) {
+        var ids = playlist.ids, pos = playlist.pos, items = null;
+        if (playlist.source === 'mixtape') {
+          // Mixtape: just the latest songs (it grows forever).
+          var from = Math.max(0, pos - 20);
+          items = playlist.items.slice(from, pos + 1);
+          ids = items.map(function (x) { return x.id; });
+          pos = ids.length - 1;
+        } else if (ids.length > 2000) return;
+        last = { kind: 'list', source: playlist.source, mode: playlist.mode, ids: ids, pos: pos, items: items,
+          song: cur, t: Math.floor(st.t), d: Math.floor(st.duration || 0) };
+      } else {
+        var path = playingShowPath(st);
+        if (!path) return;
+        var shown = directShown && activeOurs() ? directShown : null;
+        var tr = currentTrack();
+        last = { kind: 'show', path: path, t: Math.floor(st.t), d: Math.floor(st.duration || 0),
+          show: ((shown && shown.show) || st.show || (st.number ? 'Show #' + st.number : '')).split(' | ')[0],
+          cover: (shown && shown.cover) || st.cover || '',
+          song: tr ? tr.song : '', artist: tr ? tr.artist : '' };
+      }
+      last.at = Date.now();
+      localStorage.setItem(LAST_KEY, JSON.stringify(last));
+    } catch (e) {}
+  }
+  function lastPlayed() {
+    try {
+      var l = JSON.parse(localStorage.getItem(LAST_KEY) || 'null');
+      if (l && (l.kind === 'show' ? l.path : (l.song && l.ids && l.ids.length))) return l;
+    } catch (e) {}
+    return null;
+  }
+  setInterval(saveLast, 5000);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) saveLast(); });
+  window.addEventListener('pagehide', saveLast);
+  // Play on the "where you left off" mini player: the show starts right here (the page
+  // stays), at the second you were at; then Likes / History / Mixtape takes over again.
+  function resumeLast(l, btn) {
+    if (btn && btn.getAttribute('aria-busy') === 'true') return;
+    if (btn) btn.setAttribute('aria-busy', 'true');
+    var path = l.kind === 'show' ? l.path : l.song.episodeURL;
+    if (!path) return;
+    closeSheet();
+    cancelShowSwitch();
+    var mine = ++diceTry;
+    beginStarting();
+    renderPlayButtons();
+    endPlaylist(false, true);
+    switchShowHere(path, Math.max(0, l.t - 2), false, mine, function (ok) {
+      if (btn) btn.removeAttribute('aria-busy');
+      if (!ok) return showToast("Couldn't pick it back up. Try again in a moment.");
+      if (l.kind !== 'list') return;
+      // Back into the playlist, at this song (it seeks to where you were).
+      playlist = { ids: l.ids.slice(), items: l.items ? l.items.slice() : undefined, pos: l.pos, mode: l.mode, source: l.source, current: null, resumeAt: l.t };
+      if (l.source === 'mixtape' && !lookup('mixtape', l.ids[l.pos])) { playlist.items = [l.song]; playlist.ids = [l.song.id]; playlist.pos = 0; }
+      playCurrent();
+      if (l.source === 'mixtape') { renderTape(); prefetchMix(); }
+    });
+  }
+  function renderContinue(show) {
+    if (!sheet || !sheet.cont) return;
+    var nowPath = playingShowPath(npState());
+    var items = show ? continueList().filter(function (x) { return x.path !== nowPath; }).slice(0, 5) : [];
+    var key = items.map(function (x) { return x.path + ':' + Math.floor(x.t / 60); }).join('|');
+    if (sheet.contKey !== key) {
+      sheet.contKey = key;
+      // Nothing yet: say what will show up here, so the row isn't a mystery.
+      sheet.cont.querySelector('.sr-continue-row').innerHTML = !items.length
+        ? '<div class="sr-continue-empty">Shows you start will show up here, so you can pick them back up.</div>'
+        : items.map(function (x) {
+        var left = Math.max(1, Math.round((x.d - x.t) / 60));
+        var leftText = left >= 60 ? Math.floor(left / 60) + ' h ' + (left % 60) + ' min left' : left + ' min left';
+        return '<button type="button" class="sr-continue-item" data-path="' + esc(x.path) + '" aria-label="' + esc('Continue ' + x.show + ', ' + leftText) + '">' +
+          '<img alt="" aria-hidden="true"' + (x.cover ? ' src="' + esc(x.cover) + '"' : '') + '>' +
+          '<span class="sr-continue-bar" aria-hidden="true"><i style="width:' + Math.min(100, Math.max(2, x.t / x.d * 100)).toFixed(1) + '%"></i></span>' +
+          '<span class="sr-continue-name" aria-hidden="true">' + esc(x.show) + '</span>' +
+          '<span class="sr-continue-left" aria-hidden="true">' + esc(leftText) + '</span></button>';
+      }).join('');
+    }
+    if (sheet.cont.hidden !== !show) sheet.cont.hidden = !show;
+  }
+  // Picks a show back up where you left it, right here (the page doesn't change), the
+  // same way the dice switches shows.
+  function resumeShow(entry) {
+    var wasPlaying = !isPaused();
+    closeSheet();
+    cancelShowSwitch();
+    var mine = ++diceTry;
+    beginStarting();
+    renderPlayButtons();
+    endPlaylist(false, true);
+    switchShowHere(entry.path, Math.max(0, entry.t - 3), wasPlaying, mine, function (ok) {
+      if (!ok) showToast("Couldn't pick that show back up. Try again in a moment.");
+    });
+  }
+
+
+  function openSheet() {
+    buildSheet();
+    if (!sheet || isOpen()) return;
+    // Always opens on History (the first tab).
+    if (sheet.mode !== 'history') {
+      sheet.mode = 'history';
+      sheet.key = '';
+      sheet.query = '';
+      if (sheet.search) sheet.search.value = '';
+    }
+    renderSheet();
+    sheet.list.scrollTop = 0;
+    openPanel(sheet, closeSheet);
+    renderTab();
+  }
+
+  function closeSheet() { closePanel(sheet, renderTab); }
+
+  function setMode(mode) {
+    if (!sheet || sheet.mode === mode) return;
+    sheet.mode = mode;
+    sheet.key = '';
+    sheet.query = '';
+    if (sheet.search) sheet.search.value = '';
+    sheet.list.scrollTop = 0;
+    renderSheet();
+  }
+
+  // Clearing history takes two warnings: a first "are you sure", then a final one
+  // that also offers to export a backup first.
+  var clearAfterExport = false;
+  function confirmClearHistory() {
+    if (!history.length) return;
+    var n = history.length;
+    noteWithButtons(
+      '<div class="sr-note-title">Clear listening history?</div>' +
+      '<div>This removes all ' + n + (n === 1 ? ' song' : ' songs') + ' from History. Your Likes stay.</div>',
+      [['Continue', clearStepTwo], ['Cancel', null]]);
+  }
+  function clearStepTwo() {
+    if (!history.length) return;
+    noteWithButtons(
+      '<div class="sr-note-title">Are you sure?</div>' +
+      '<div>This can\'t be undone.</div>',
+      [['Clear history', clearHistoryNow], ['Export first', function () {
+        clearAfterExport = true;
+        native({ op: 'export' });
+      }], ['Cancel', null]]);
+  }
+  function clearHistoryNow() {
+    history = [];
+    native({ op: 'historyClear' });
+    if (sheet) { sheet.key = ''; renderSheet(); }
+    showToast('Listening history cleared.');
+  }
+  function noteWithButtons(html, buttons) {
+    var n = showNote(html + '<div class="sr-actions"></div>', 0);
+    if (!n) return;
+    var row = n.querySelector('.sr-actions');
+    buttons.forEach(function (b) {
+      var btn = el('button', 'sr-btn', (b[2] || '') + '<span>' + esc(b[0]) + '</span>');
+      btn.type = 'button';
+      if (b[3]) btn.setAttribute('aria-label', b[3]);
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        hideNote();
+        if (b[1]) b[1]();
+      });
+      row.appendChild(btn);
+    });
+    var firstBtn = row.querySelector('button');
+    if (firstBtn) setTimeout(function () { focusInside(n, firstBtn); }, 60);
+  }
+
+  function renderSheet() {
+    if (!sheet) return;
+    var hist = sheet.mode === 'history';
+    renderAutoBackup();
+    sheet.favTab.setAttribute('aria-pressed', hist ? 'false' : 'true');
+    sheet.histTab.setAttribute('aria-pressed', hist ? 'true' : 'false');
+    sheet.panel.setAttribute('aria-label', hist ? 'History' : 'Likes');
+    var ph = hist ? 'Search your History' : 'Search your Likes';
+    if (sheet.search.getAttribute('placeholder') !== ph) { sheet.search.setAttribute('placeholder', ph); sheet.search.setAttribute('aria-label', ph); }
+    sheet.clearBtn.hidden = !hist;
+    var source = hist ? history : favorites;
+    var sorted = source.slice().sort(function (a, b) { return b.favoritedAt - a.favoritedAt; });
+    var total = sorted.length;
+    var q = (sheet.query || '').trim().toLowerCase();
+    if (q) sorted = sorted.filter(function (f) { return ((f.song || '') + ' ' + (f.artist || '') + ' ' + (f.show || '')).toLowerCase().indexOf(q) >= 0; });
+    // The song playing right now, however it was started (Likes, History, Mixtape, or a show).
+    var nowTrack = (playlist && playlist.current) || currentTrack();
+    var playingId = nowTrack ? nowTrack.id : null;
+    // History rows show "2h ago", and hearts there follow favorites, so both go in the key.
+    var key = JSON.stringify([sheet.mode, sorted.map(function (f) { return f.id + (hist ? ':' + ago(f.favoritedAt) + ':' + !!byId(f.id) : ''); }), playingId]);
+    var count = sorted.length;
+    sheet.sub.textContent = q ? count + ' of ' + total + ' songs' : (count === 1 ? '1 song' : count + ' songs');
+    sheet.playBtn.disabled = sheet.shuffleBtn.disabled = sheet.clearBtn.disabled = !total;
+    key += '|' + q;
+    if (key !== sheet.key) {
+      sheet.key = key;
+      buildSheetList(sorted, hist, playingId, count, q);
+    }
+    renderContinue(hist && !q);
+    var st = npState();
+    var paused = !st || !!st.paused;
+    var sb = sheet.list.querySelector('.sr-sheet-bars');
+    if (sb && sb.classList.contains('sr-paused') !== paused) sb.classList.toggle('sr-paused', paused);
+  }
+
+  function buildSheetList(sorted, hist, playingId, count, q) {
+    sheet.list.textContent = '';
+    if (!count) {
+      sheet.list.appendChild(el('div', 'sr-empty', q
+        ? 'No songs match “' + esc(q) + '”.'
+        : hist
+          ? 'Nothing here yet. Songs you play show up here.'
+          : 'No likes yet. Tap the heart next to a song to like it.'));
+      return;
+    }
+    sorted.forEach(function (f) {
+      var item = el('div', 'sr-item' + (f.id === playingId ? ' sr-item-playing' : ''));
+      item.setAttribute('data-id', f.id);
+      var behind = el('div', 'sr-item-remove', 'Remove');
+      behind.setAttribute('aria-hidden', 'true');
+      item.appendChild(behind);
+      var showLine = esc(f.show) + (hist ? ' · ' + esc(ago(f.favoritedAt)) : '');
+      var main = el('div', 'sr-item-main',
+        '<img alt="" src="' + esc(f.cover) + '">' +
+        '<div class="sr-item-text"><div class="sr-item-show">' + showLine + '</div>' +
+        '<div class="sr-item-line"><span class="sr-item-song">' + esc(f.song) + '</span>&nbsp;<span class="sr-item-artist">' + esc(f.artist) + '</span></div></div>');
+      var heart = heartButton('');
+      if (hist) {
+        setHeart(heart, !!byId(f.id), f.song);
+        heart.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var fav = {};
+          for (var k in f) fav[k] = f[k];
+          fav.favoritedAt = Date.now();
+          toggle(fav);
+        });
+      } else {
+        setHeart(heart, true, f.song);
+        heart.addEventListener('click', function (e) { e.stopPropagation(); removeItem(item, f.id, 'favorites'); });
+      }
+      if (f.id === playingId) {
+        var bars = el('span', 'sr-bars sr-sheet-bars', '<i></i><i></i><i></i>');
+        bars.setAttribute('aria-hidden', 'true');
+        main.appendChild(bars);
+      }
+      // More: share, find on Spotify / Apple Music, and (History) remove: a tap
+      // instead of the swipe, for anyone who can't swipe.
+      var more = el('button', 'sr-more', MORE);
+      more.type = 'button';
+      more.setAttribute('aria-label', 'More for ' + f.song);
+      more.setAttribute('aria-expanded', 'false');
+      more.addEventListener('click', function (e) {
+        e.stopPropagation();
+        songActions(f, [['Remove', function () { removeItem(item, f.id, sheet.mode); }, TRASH, hist ? 'Remove from History' : 'Remove from Likes']], more);
+      });
+      main.appendChild(more);
+      main.appendChild(heart);
+      // The song text is the "play" control for keyboards and VoiceOver (the whole row
+      // can't be one, since the heart and more buttons sit inside it).
+      keyClickable(main.querySelector('.sr-item-text'), 'Play ' + f.song + (f.artist ? ' by ' + f.artist : '') + (f.id === playingId ? ', playing now' : ''));
+      // Tapping the cover opens the song's show instead of playing it.
+      var cover = main.querySelector('img');
+      cover.removeAttribute('alt'); // it's a button with its own label, not decoration
+      keyClickable(cover, 'Open ' + (f.show || 'the show') + ' at ' + f.song);
+      cover.addEventListener('click', function (e) {
+        if (main.getAttribute('data-swiped')) return;
+        e.stopPropagation();
+        showSongInShow(f);
+      });
+      main.addEventListener('click', function () {
+        if (main.getAttribute('data-swiped')) return;
+        startPlaylist('order', f.id, sheet.mode);
+      });
+      item.appendChild(main);
+      attachSwipeToRemove(item, main, f.id, sheet.mode);
+      sheet.list.appendChild(item);
+    });
+  }
+
+  function removeItem(item, id, source) {
+    item.style.transition = 'opacity .2s';
+    item.style.opacity = '0';
+    setTimeout(function () { if (source === 'history') removeHistory(id); else remove(id); }, 200);
+  }
+
+  function attachSwipeToRemove(item, main, id, source) {
+    var x0 = 0, y0 = 0, dx = 0, mode = null;
+    main.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) return;
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dx = 0; mode = null;
+      main.style.transition = 'none';
+      main.removeAttribute('data-swiped');
+    }, { passive: true });
+    main.addEventListener('touchmove', function (e) {
+      var ddx = e.touches[0].clientX - x0, ddy = e.touches[0].clientY - y0;
+      if (!mode) {
+        if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+        mode = Math.abs(ddx) > Math.abs(ddy) && ddx < 0 ? 'swipe' : 'other';
+      }
+      if (mode !== 'swipe') return;
+      e.preventDefault();
+      e.stopPropagation();
+      dx = Math.min(0, ddx);
+      main.style.transform = 'translateX(' + dx + 'px)';
+    }, { passive: false });
+    main.addEventListener('touchend', function () {
+      if (mode !== 'swipe') return;
+      main.setAttribute('data-swiped', '1');
+      main.style.transition = 'transform .2s ease';
+      if (dx < -main.offsetWidth * 0.35) {
+        main.style.transform = 'translateX(-100%)';
+        setTimeout(function () { removeItem(item, id, source); }, 150);
+      } else {
+        main.style.transform = '';
+      }
+      setTimeout(function () { main.removeAttribute('data-swiped'); }, 350);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slide-up panels (Likes, Sleep timer, Help): one way to open, close and pull down.
+  // p = {root, backdrop, panel, list}
+  // ---------------------------------------------------------------------------
+  function panelIsOpen(p) { return !!(p && p.root.classList.contains('sr-open')); }
+  function openPanel(p, closeFn) {
+    p.backdrop.hidden = p.panel.hidden = false;
+    p.panel.style.transform = '';
+    document.documentElement.classList.add('sr-lock');
+    void p.panel.offsetHeight; // start the slide-up from the closed position
+    p.root.classList.add('sr-open');
+    dialogOpened(p.panel, closeFn);
+  }
+  // Returns false if it wasn't open. `after` runs once it has slid away.
+  function closePanel(p, after) {
+    if (!panelIsOpen(p)) return false;
+    dialogClosed(p.panel);
+    p.root.classList.remove('sr-open');
+    p.panel.style.transform = '';
+    document.documentElement.classList.remove('sr-lock');
+    setTimeout(function () {
+      if (panelIsOpen(p)) return;
+      p.backdrop.hidden = p.panel.hidden = true;
+      if (after) after();
+    }, 300);
+    return true;
+  }
+  // Swipe down on a panel (from its header, or from its list when that's scrolled to
+  // the top) to close it. Decided on the first move down, so the list never starts
+  // bouncing first (that fought the panel and made it jumpy). It follows the finger,
+  // the backdrop fades with it, and a quick flick closes it too.
+  function attachPanelDrag(p, closeFn) {
+    var y0 = 0, x0 = 0, yStart = 0, dy = 0, mode = null, fromList = false, track = null, frame = 0;
+    function place() {
+      frame = 0;
+      p.panel.style.transform = 'translate3d(0,' + dy.toFixed(1) + 'px,0)';
+      p.backdrop.style.opacity = Math.max(0, 1 - dy / (p.panel.offsetHeight || 1)).toFixed(3);
+    }
+    p.panel.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) return;
+      y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0; mode = null;
+      fromList = !!(p.list && p.list.contains(e.target));
+      track = velocityTracker();
+      track.add(y0);
+    }, { passive: true });
+    p.panel.addEventListener('touchmove', function (e) {
+      var y = e.touches[0].clientY, ddy = y - y0, ddx = e.touches[0].clientX - x0;
+      if (!mode) {
+        if (Math.abs(ddx) > 6 && Math.abs(ddx) > Math.abs(ddy)) mode = 'other';
+        else if (ddy > 0 && (!fromList || p.list.scrollTop <= 0)) {
+          mode = 'drag';
+          yStart = y;
+          p.panel.style.transition = p.backdrop.style.transition = 'none';
+        } else if (Math.abs(ddy) > 6) mode = 'other';
+        else return;
+      }
+      if (mode !== 'drag') return;
+      e.preventDefault();
+      track.add(y);
+      dy = Math.max(0, y - yStart);
+      if (!frame) frame = requestAnimationFrame(place);
+    }, { passive: false });
+    function end() {
+      if (mode !== 'drag') { mode = null; return; }
+      mode = null;
+      if (frame) { cancelAnimationFrame(frame); frame = 0; }
+      var v = track ? track.velocity() : 0; // px per second, positive = down
+      p.panel.style.transition = p.backdrop.style.transition = p.backdrop.style.opacity = '';
+      if (v > 450 || (v > -300 && dy > Math.min(120, p.panel.offsetHeight * 0.25))) closeFn();
+      else p.panel.style.transform = '';
+    }
+    p.panel.addEventListener('touchend', end);
+    p.panel.addEventListener('touchcancel', end);
+  }
+
+  // The site's search box in its top bar (the app's buttons sit on both sides of it).
+  function searchBox() {
+    var input = document.querySelector('input[placeholder*="Search" i]');
+    if (!input) return null;
+    // Climb to the box that sits beside the logo / back link in the top bar row.
+    for (var e = input; e && e.parentElement && e.parentElement !== document.body; e = e.parentElement) {
+      if (e.parentElement.children.length > 1) return e;
+    }
+    return null;
+  }
+  // The app's own top bar: fixed at the top of every page, so its buttons never move
+  // or go missing (even when the site redraws its own top bar). Left: Back and Forward (dimmed when there
+  // is nowhere to go) and Home. Right: Likes, Random show, Mixtape, Sleep timer
+  // and Help. It lines up with the site's search box, which stays in between.
+  var appBar = null; // {root, left, right, back, home}
+  function buildAppBar() {
+    if (appBar || !document.body) return;
+    var root = el('div', 'sr-appbar');
+    var left = el('div', 'sr-appbar-side sr-appbar-left');
+    var right = el('div', 'sr-appbar-side sr-appbar-right');
+    var back = heartButton('sr-appbar-btn sr-back-top');
+    back.innerHTML = BACK;
+    back.removeAttribute('aria-pressed');
+    back.setAttribute('aria-label', 'Back');
+    back.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      if (!canBack) return;
+      closeSheet(); closePlayer();
+      native({ op: 'goBack' });
+    });
+    var forward = heartButton('sr-appbar-btn sr-forward-top');
+    forward.innerHTML = FORWARD;
+    forward.removeAttribute('aria-pressed');
+    forward.setAttribute('aria-label', 'Forward');
+    forward.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      if (!canForward) return;
+      closeSheet(); closePlayer();
+      native({ op: 'goForward' });
+    });
+    var home = heartButton('sr-appbar-btn sr-home-top');
+    home.innerHTML = HOME;
+    home.removeAttribute('aria-pressed');
+    home.setAttribute('aria-label', 'Home');
+    home.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      closeSheet(); closePlayer();
+      if (location.pathname !== '/') goTo('/', 'sr-home', '1'); else window.scrollTo(0, 0);
+    });
+    // Search: only when the app's bar covers a page's top bar (that page has no search
+    // box of its own to use). Opens the home page with its search box ready to type in.
+    var search = heartButton('sr-appbar-btn sr-search-top');
+    search.innerHTML = SEARCH;
+    search.removeAttribute('aria-pressed');
+    search.setAttribute('aria-label', 'Search');
+    search.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      closeSheet(); closePlayer();
+      try { sessionStorage.setItem(FOCUS_SEARCH_KEY, '1'); } catch (err) {}
+      if (location.pathname !== '/') goTo('/', 'sr-home', '1');
+    });
+    left.appendChild(back);
+    left.appendChild(forward);
+    left.appendChild(home);
+    left.appendChild(search);
+    root.appendChild(left);
+    root.appendChild(right);
+    document.body.appendChild(root);
+    appBar = { root: root, left: left, right: right, back: back, forward: forward, home: home, search: search };
+    attachLabel(back, 'Back');
+    attachLabel(forward, 'Forward');
+    attachLabel(home, 'Home');
+    attachLabel(search, 'Search');
+  }
+  // Whether there's a page to go back to: told by the app (its page history, the same
+  // one the edge swipe uses).
+  var canBack = false, canForward = false;
+  // Back always keeps its spot (so the search box and buttons never shift); it's dimmed
+  // when there's no page to go back to.
+  function setBackState() {
+    if (!appBar) return;
+    var v = canBack ? 'false' : 'true';
+    if (appBar.back.getAttribute('aria-disabled') !== v) appBar.back.setAttribute('aria-disabled', v);
+    var fv = canForward ? 'false' : 'true';
+    if (appBar.forward.getAttribute('aria-disabled') !== fv) appBar.forward.setAttribute('aria-disabled', fv);
+  }
+  // Whenever the page's address changes, ask the app again whether Back works, so Back
+  // lights up as soon as there's a page to go back to (also on the home page).
+  var backHref = '';
+  function checkBackState() {
+    if (location.href === backHref) return;
+    backHref = location.href;
+    native({ op: 'backState' });
+    setTimeout(function () { native({ op: 'backState' }); }, 400); // after iOS catches up
+  }
+  function renderTab() {
+    buildAppBar();
+    if (!appBar) return;
+    checkBackState();
+    if (!tab) {
+      tab = heartButton('sr-heart-top');
+      tab.setAttribute('aria-label', 'Open Likes and History');
+      tab.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openSheet(); });
+    }
+    if (!dice) {
+      dice = heartButton('sr-dice-top');
+      dice.innerHTML = DICE;
+      dice.removeAttribute('aria-pressed');
+      dice.setAttribute('aria-label', 'Play a random show');
+      dice.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); playRandomShow(); });
+    }
+    if (!moon) {
+      moon = heartButton('sr-moon-top');
+      moon.innerHTML = MOON;
+      moon.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openSleep(); });
+    }
+    if (!tape) {
+      tape = heartButton('sr-tape-top');
+      tape.innerHTML = CASSETTE;
+      tape.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); toggleMixtape(); });
+    }
+    if (!help) {
+      help = heartButton('sr-help-top');
+      help.innerHTML = HELP;
+      help.removeAttribute('aria-pressed');
+      help.setAttribute('aria-label', 'What these buttons do');
+      help.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openHelp(); });
+      attachLabel(tab, 'Likes');
+      attachLabel(dice, 'Random show');
+      attachLabel(tape, 'Mixtape');
+      attachLabel(moon, 'Sleep timer');
+      attachLabel(help, 'Help');
+    }
+    var order = [tab, dice, tape, moon, help];
+    order.forEach(function (b, i) { if (appBar.right.children[i] !== b) appBar.right.insertBefore(b, appBar.right.children[i] || null); });
+    setBackState();
+    fitAppBar();
+    renderTape();
+    renderMoon();
+  }
+  // Where the buttons go: inside the site's own top bar, on both sides of its search box,
+  // so they stay exactly where the search box is (also while the page bounces). The
+  // site's own logo / back link there is hidden (Home and Back replace it). On a page
+  // without that top bar, they sit in the app's own bar fixed at the top instead.
+  function fitAppBar() {
+    var box = searchBox();
+    var row = box && box.parentElement;
+    if (row) {
+      [].forEach.call(row.children, function (c) {
+        if (c === box || c === appBar.left || c === appBar.right) return;
+        if ((c.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING) && !c.hasAttribute('data-sr-hidden')) {
+          c.setAttribute('data-sr-hidden', '1');
+          c.style.setProperty('display', 'none', 'important');
+        } else if ((box.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING) && !c.hasAttribute('data-sr-drop')) {
+          // After the search box: the site's suggestion list. It opens under the bar,
+          // over the page, not inside the one-line bar.
+          c.setAttribute('data-sr-drop', '');
+        }
+      });
+      // One line, always: after a search the site stacks its phone top bar (search box on
+      // a line of its own), which would put the app's buttons on lines of their own too.
+      if (!row.hasAttribute('data-sr-bar-row')) row.setAttribute('data-sr-bar-row', '');
+      // The search box takes whatever room is left (it can get narrower, never wider).
+      if (box.style.minWidth !== '0px') { box.style.minWidth = '0px'; box.style.flex = '1 1 0px'; }
+      var input = box.querySelector('input');
+      if (input && input.style.minWidth !== '0px') { input.style.minWidth = '0px'; input.style.width = '100%'; }
+      if (box.previousElementSibling !== appBar.left) row.insertBefore(appBar.left, box);
+      if (box.nextElementSibling !== appBar.right) row.insertBefore(appBar.right, box.nextSibling);
+      if (!appBar.root.hidden) appBar.root.hidden = true;
+      // Remember exactly where the buttons sit, for the moment the site swaps pages.
+      var lr = appBar.left.getBoundingClientRect(), gr = appBar.right.getBoundingClientRect();
+      rowGoneAt = 0;
+      appBar.root.classList.remove('sr-appbar-cover');
+      // Arrived from the Search button: the search box is ready to type in.
+      try {
+        if (sessionStorage.getItem(FOCUS_SEARCH_KEY)) {
+          sessionStorage.removeItem(FOCUS_SEARCH_KEY);
+          setTimeout(function () { box.focus(); }, 150);
+        }
+      } catch (err) {}
+      // Measured only with the page at the very top and the bar below the status bar
+      // (mid-scroll or mid-swap it can sit higher, and holding that spot made the
+      // buttons jump up under the clock while pages swapped).
+      if (lr.height && window.scrollY <= 1 && lr.top >= safeTop() - 1 && lr.top < 200) {
+        lastRow = { top: lr.top, height: lr.height, left: lr.left, right: window.innerWidth - gr.right, bottom: row.getBoundingClientRect().bottom };
+      }
+    } else {
+      if (appBar.left.parentElement !== appBar.root) appBar.root.appendChild(appBar.left);
+      if (appBar.right.parentElement !== appBar.root) appBar.root.appendChild(appBar.right);
+      // While the site swaps one page for the next, its top bar is gone for a moment.
+      // The buttons hold their exact spots (not the app's own bar, which sits higher)
+      // until the new page's top bar shows up, so nothing jumps.
+      if (!rowGoneAt) rowGoneAt = Date.now();
+      var hold = lastRow && Date.now() - rowGoneAt < 4000;
+      var st = appBar.root.style;
+      if (hold) {
+        appBar.root.classList.remove('sr-appbar-cover');
+        appBar.root.style.paddingTop = '';
+        appBar.root.classList.add('sr-appbar-hold');
+        st.top = Math.max(lastRow.top, safeTop()) + 'px'; st.height = lastRow.height + 'px';
+        st.paddingLeft = lastRow.left + 'px'; st.paddingRight = lastRow.right + 'px';
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(fitAppBar, 4100 - (Date.now() - rowGoneAt));
+      } else {
+        appBar.root.classList.remove('sr-appbar-hold');
+        if (lastRow) {
+          // No search box to sit next to on this page (the site built it differently):
+          // the app's own bar covers the site's top bar, with every button exactly
+          // where it is on the other pages, so Back and the rest are always there.
+          appBar.root.classList.add('sr-appbar-cover');
+          st.top = '0'; st.height = Math.max(lastRow.bottom, lastRow.top + lastRow.height) + 'px';
+          st.paddingTop = lastRow.top + 'px';
+          st.paddingLeft = lastRow.left + 'px'; st.paddingRight = lastRow.right + 'px';
+        } else {
+          appBar.root.classList.remove('sr-appbar-cover');
+          st.top = st.height = st.paddingTop = st.paddingLeft = st.paddingRight = '';
+        }
+      }
+      if (appBar.root.hidden) appBar.root.hidden = false;
+    }
+  }
+  var lastRow = null, rowGoneAt = 0, holdTimer = null, FOCUS_SEARCH_KEY = 'sr-focus-search';
+  // The height of the status bar area (the screen's top safe area), measured once.
+  var safeTopPx = null;
+  function safeTop() {
+    if (safeTopPx !== null) return safeTopPx;
+    try {
+      var probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;padding-top:env(safe-area-inset-top)';
+      document.documentElement.appendChild(probe);
+      safeTopPx = probe.offsetHeight || 0;
+      probe.remove();
+    } catch (e) { return 0; }
+    return safeTopPx;
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Press and hold a top bar icon to see its name.
+  // ---------------------------------------------------------------------------
+  var tip = null, tipTimer = null, tipShownFor = null;
+  function attachLabel(btn, label) {
+    btn.setAttribute('title', label);
+    btn.addEventListener('touchstart', function () {
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(function () { showTip(btn, label); }, 420);
+    }, { passive: true });
+    var cancel = function () { clearTimeout(tipTimer); setTimeout(hideTip, 900); };
+    btn.addEventListener('touchend', cancel);
+    btn.addEventListener('touchcancel', cancel);
+    btn.addEventListener('touchmove', function () { clearTimeout(tipTimer); }, { passive: true });
+    btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    // A long press only shows the label; it doesn't also press the button.
+    btn.addEventListener('click', function (e) {
+      if (tipShownFor === btn) { e.preventDefault(); e.stopImmediatePropagation(); tipShownFor = null; }
+    }, true);
+  }
+  function showTip(btn, label) {
+    hideTip(true);
+    tip = el('div', 'sr-tip', esc(label));
+    document.body.appendChild(tip);
+    var r = btn.getBoundingClientRect();
+    var w = tip.offsetWidth;
+    var left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2));
+    tip.style.left = left + 'px';
+    tip.style.top = (r.bottom + 6) + 'px';
+    void tip.offsetHeight;
+    tip.classList.add('sr-show');
+    tipShownFor = btn;
+  }
+  function hideTip(now) {
+    if (!tip) return;
+    var t = tip;
+    tip = null;
+    t.classList.remove('sr-show');
+    setTimeout(function () { t.remove(); }, now ? 0 : 150);
+  }
+
+  // ---------------------------------------------------------------------------
+  // "?" panel and the first-launch welcome screen
+  // ---------------------------------------------------------------------------
+  function helpItems() {
+    return [
+      [HOME, 'Back, Forward and Home', 'Top left, on every page: go back a page, forward again after going back, or straight to the home page.'],
+      [HEART, 'Likes', 'The songs you liked and the songs you played. Play them in a row, search them, or tap a cover to open its show. Under History, Continue listening picks a show back up where you left it.'],
+      [DICE, 'Random show', 'Plays a random show from the start.'],
+      [CASSETTE, 'Mixtape', 'Plays random songs from random shows, nonstop. Each song goes into your Likes, even if you skip it, and into History once it plays. You can remove any you don’t want.'],
+      [MOON, 'Sleep timer', 'Turns the music down slowly and stops it after a set time, or at the end of a song or show.'],
+      [NOTE, 'New show alerts', 'You get a notification when a new show is out. The app checks about every 15 minutes, even when it\'s closed. If alerts stop, set the app\'s battery use to Unrestricted (Settings → Apps → Soulection Radio → Battery).'],
+      [PLAYBIG, 'Big player', 'Tap or swipe up on the player at the bottom to see big art and controls. Tap Up Next for the songs coming up. Swipe the player at the bottom left or right to skip songs.'],
+      [HEART, 'Like any song', 'Tap the heart next to a song in a show, or in the player.'],
+      [MORE, 'More', 'Share a song, or find it on Spotify or Apple Music.'],
+      [NEXT, 'Skip songs', 'The next and back buttons on your lock screen and in the notification move between songs in the show.'],
+      [CLOUD, 'Back up to Google Drive', 'Your Likes and History are always backed up on this phone (Downloads → Soulection). The Drive copy keeps them safe even if you delete the app. In Likes, tap Turn on and save the backup file in Google Drive. After you put the app back, pick that file when it asks.'],
+      [CLOUD, 'Drive backup paused?', 'If the app loses access to the Drive copy (the copy on this phone keeps going), tap Reconnect and pick Soulection Radio Backup.json.']
+    ];
+  }
+  function helpListHTML() {
+    return '<div class="sr-help-list">' + helpItems().map(function (it) {
+      return '<div class="sr-help-row"><div class="sr-help-icon">' + it[0] + '</div><div>' +
+        '<div class="sr-help-title">' + esc(it[1]) + '</div><div class="sr-help-desc">' + esc(it[2]) + '</div></div></div>';
+    }).join('') + '</div>';
+  }
+  var helpPanel = null;
+  var askedNotify = false; // the app itself only ever shows iOS's prompt once
+  var buildLabel = '';
+  // The last new-show check (from the app): {at, how, number}, or null.
+  var newShowCheck = null;
+  function newShowCheckLine() {
+    var c = newShowCheck;
+    if (!c || !c.at) return 'Last checked for new shows: not yet';
+    var d = new Date(c.at);
+    var when = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' +
+      d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return 'Last checked for new shows: ' + when + ' (' + c.how + '), newest #' + c.number;
+  }
+  function openHelp() {
+    if (!helpPanel) {
+      var root = el('div', 'sr-fav-root sr-help');
+      var backdrop = el('div', 'sr-backdrop');
+      var panel = el('div', 'sr-sheet');
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-label', 'What the buttons do');
+      var head = el('div', 'sr-sheet-head');
+      head.appendChild(el('div', 'sr-sheet-grab'));
+      head.appendChild(el('h2', 'sr-sleep-title', 'How it works'));
+      head.appendChild(closeButton(function () { closeHelp(); }));
+      var list = el('div', 'sr-list', helpListHTML());
+      list.setAttribute('tabindex', '0'); // scrollable with the keyboard
+      list.setAttribute('aria-label', 'What each button does');
+      // Brings back the welcome screen (the one shown when the app opens).
+      var again = el('button', 'sr-btn sr-help-welcome', '<span>Show welcome screen</span>');
+      again.type = 'button';
+      again.addEventListener('click', function () {
+        closeHelp();
+        setTimeout(function () { showWelcome(true); }, 320);
+      });
+      list.appendChild(again);
+      var foot = el('div', 'sr-help-build');
+      list.appendChild(foot);
+      panel.appendChild(head);
+      panel.appendChild(list);
+      root.appendChild(backdrop);
+      root.appendChild(panel);
+      document.body.appendChild(root);
+      backdrop.addEventListener('click', closeHelp);
+      helpPanel = { root: root, backdrop: backdrop, panel: panel, list: list };
+      attachPanelDrag(helpPanel, closeHelp);
+    }
+    var buildEl = helpPanel.root.querySelector('.sr-help-build');
+    if (buildEl) buildEl.textContent = buildLabel + '\n' + newShowCheckLine();
+    closeSheet();
+    openPanel(helpPanel, closeHelp);
+  }
+  function closeHelp() { closePanel(helpPanel); }
+
+  // Shows on each launch (once per app session, not on every page load) until
+  // "Don't show again" is ticked.
+  var WELCOME_SESSION_KEY = 'sr-welcome-shown';
+  var welcomeOpen = false, welcomeShown = false, restoreAfterWelcome = false;
+  try { welcomeShown = sessionStorage.getItem(WELCOME_SESSION_KEY) === '1'; } catch (e) {}
+  function fitOneLine(node, max, min) {
+    var size = max;
+    node.style.fontSize = size + 'px';
+    while (size > min && node.scrollWidth > node.clientWidth) {
+      size -= 0.5;
+      node.style.fontSize = size + 'px';
+    }
+  }
+  function showWelcome(again) {
+    if ((welcomeShown && !again) || welcomeOpen || !document.body) return;
+    welcomeShown = welcomeOpen = true;
+    try { sessionStorage.setItem(WELCOME_SESSION_KEY, '1'); } catch (e) {}
+    var w = el('div', 'sr-fav-root sr-welcome',
+      '<h1 class="sr-welcome-title">This is Soulection Radio.</h1>' +
+      '<div class="sr-welcome-sub">Every show, still playing when your screen is off, plus a few extras:</div>' +
+      helpListHTML() +
+      '<label class="sr-welcome-check"><input type="checkbox"><span>Don’t show again</span></label>' +
+      '<button type="button" class="sr-welcome-go">Get started</button>');
+    w.setAttribute('role', 'dialog');
+    w.setAttribute('aria-label', 'Welcome');
+    document.body.appendChild(w);
+    dialogOpened(w, function () { var go = w.querySelector('.sr-welcome-go'); go && go.click(); });
+    var wl = w.querySelector('.sr-help-list');
+    if (wl) { wl.setAttribute('tabindex', '0'); wl.setAttribute('aria-label', 'What each button does'); }
+    var title = w.querySelector('.sr-welcome-title');
+    var refit = function () { if (w.isConnected) fitOneLine(title, 28, 14); };
+    refit();
+    // The site's font is wider than the fallback; fit again once it has loaded.
+    try { document.fonts && document.fonts.ready.then(refit); } catch (e) {}
+    setTimeout(refit, 300);
+    setTimeout(refit, 1200);
+    window.addEventListener('resize', refit);
+    void w.offsetHeight;
+    w.classList.add('sr-show');
+    w.querySelector('.sr-welcome-go').addEventListener('click', function () {
+      if (w.querySelector('.sr-welcome-check input').checked) native({ op: 'welcomeSeen' });
+      welcomeOpen = false;
+      dialogClosed(w);
+      setTimeout(function () { native({ op: 'notifyPermission' }); }, 800);
+      w.classList.remove('sr-show');
+      setTimeout(function () { w.remove(); }, 320);
+      if (restoreAfterWelcome) { restoreAfterWelcome = false; offerRestore(); }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sleep timer
+  // ---------------------------------------------------------------------------
+  var SLEEP_KEY = 'sr-sleep';
+  var CUSTOM_KEY = 'sr-sleep-custom';
+  var sleep = null;      // {type: 'time', endsAt} | {type: 'song', id} | {type: 'show', number}
+  var sleepPanel = null; // {root, list, status}
+  var sleepTick = null;
+  try { sleep = JSON.parse(sessionStorage.getItem(SLEEP_KEY) || 'null'); } catch (e) {}
+  if (sleep && sleep.type === 'time' && sleep.endsAt <= Date.now()) sleep = null;
+  var customMinutes = 45;
+  try { customMinutes = Math.min(720, Math.max(5, parseInt(localStorage.getItem(CUSTOM_KEY), 10) || 45)); } catch (e) {}
+
+  function saveSleep() {
+    try { if (sleep) sessionStorage.setItem(SLEEP_KEY, JSON.stringify(sleep)); else sessionStorage.removeItem(SLEEP_KEY); } catch (e) {}
+  }
+  function durationLabel(min) {
+    var h = Math.floor(min / 60), m = min % 60;
+    var parts = [];
+    if (h) parts.push(h + (h === 1 ? ' hour' : ' hours'));
+    if (m || !h) parts.push(m + (m === 1 ? ' minute' : ' minutes'));
+    return parts.join(', ');
+  }
+  function clock(sec) {
+    sec = Math.max(0, Math.ceil(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    var mm = (h && m < 10 ? '0' : '') + m;
+    return (h ? h + ':' : '') + mm + ':' + (s < 10 ? '0' : '') + s;
+  }
+  function sleepText() {
+    if (!sleep) return '';
+    if (sleep.type === 'time') return clock((sleep.endsAt - Date.now()) / 1000);
+    return sleep.type === 'song' ? 'Song' : 'Show';
+  }
+  function renderMoon() {
+    if (!moon) return;
+    var on = !!sleep;
+    if (moon.getAttribute('aria-pressed') !== String(on)) moon.setAttribute('aria-pressed', String(on));
+    var label = on ? 'Sleep timer on, ' + (sleep.type === 'time' ? sleepText() + ' left' : 'stops at the end of the ' + (sleep.type === 'song' ? 'song' : 'show')) : 'Sleep timer';
+    if (moon.getAttribute('aria-label') !== label) moon.setAttribute('aria-label', label);
+    if (panelIsOpen(sleepPanel)) renderSleepStatus();
+  }
+  function startTick() {
+    if (sleepTick) return;
+    sleepTick = setInterval(function () {
+      if (!sleep) { clearInterval(sleepTick); sleepTick = null; }
+      renderMoon();
+    }, 1000);
+  }
+
+  function setSleep(next) {
+    sleep = next;
+    saveSleep();
+    if (sleep && sleep.type === 'time') native({ op: 'sleepStart', seconds: (sleep.endsAt - Date.now()) / 1000 });
+    else native({ op: 'sleepCancel' });
+    if (sleep) startTick();
+    renderMoon();
+  }
+  function startTimer(minutes) { setSleep({ type: 'time', endsAt: Date.now() + minutes * 60000 }); closeSleep(); showToast('Sleep timer: ' + durationLabel(minutes) + '.'); }
+  function stopAfterSong() {
+    var t = currentTrack();
+    if (!t) return showToast('Play a song from a show first.');
+    setSleep({ type: 'song', id: t.id, end: t.end });
+    closeSleep();
+    showToast('Stopping at the end of this song.');
+  }
+  function stopAfterShow() {
+    var st = npState();
+    if (!st || !st.number) return showToast('Play a show first.');
+    setSleep({ type: 'show', number: st.number });
+    closeSleep();
+    showToast('Stopping at the end of this show.');
+  }
+  function sleepNow() {
+    setSleep(null);
+    endPlaylist(false); // so a playlist or Mixtape can't start the next song
+    native({ op: 'sleepNow' });
+    var n = np();
+    n && n.pause();
+    showToast('Sleep timer: music paused.');
+  }
+  // "End of song" / "End of show" follow playback.
+  var SLEEP_FADE = 15; // seconds of fade before "End of song" / "End of show"
+  function followSleep(st) {
+    if (!sleep || sleep.type === 'time' || !st) return;
+    // Start fading a little before the end.
+    if (!sleep.fading && st.t != null && st.paused === false) {
+      var end = sleep.type === 'song' ? sleep.end : st.duration;
+      var left = end != null ? end - st.t : null;
+      if (left != null && left > 0.5 && left <= SLEEP_FADE) {
+        sleep.fading = true;
+        saveSleep();
+        native({ op: 'sleepFade', seconds: left });
+      }
+    }
+    if (sleep.type === 'song') {
+      var t = currentTrack();
+      var past = sleep.end != null && st.t != null && st.t >= sleep.end - 0.6;
+      if (past || (t && t.id !== sleep.id) || (!t && st.index != null && st.index >= 0)) sleepNow();
+    } else if (sleep.type === 'show') {
+      var ended = st.duration && st.t != null && st.t >= st.duration - 1;
+      if (ended || (st.number && st.number !== sleep.number)) sleepNow();
+    }
+  }
+
+  function buildSleep() {
+    if (sleepPanel || !document.body) return;
+    var root = el('div', 'sr-fav-root sr-sleep');
+    var backdrop = el('div', 'sr-backdrop');
+    var panel = el('div', 'sr-sheet');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Sleep timer');
+    backdrop.hidden = panel.hidden = true;
+    var head = el('div', 'sr-sheet-head');
+    head.appendChild(el('div', 'sr-sheet-grab'));
+    head.appendChild(el('h2', 'sr-sleep-title', 'Sleep timer'));
+    head.appendChild(closeButton(function () { closeSleep(); }));
+    // The countdown, with "+5 min" beside it while a timer runs.
+    var now = el('div', 'sr-sleep-now');
+    var status = el('div', 'sr-sleep-status');
+    status.setAttribute('aria-live', 'polite');
+    now.appendChild(status);
+    var plus = el('button', 'sr-sleep-plus', '+5 min');
+    plus.type = 'button';
+    plus.setAttribute('aria-label', 'Add 5 more minutes');
+    plus.hidden = true;
+    plus.addEventListener('click', function () {
+      if (!sleep || sleep.type !== 'time') return;
+      setSleep({ type: 'time', endsAt: Math.max(Date.now(), sleep.endsAt) + 5 * 60000 });
+      renderSleepStatus();
+      announce('Sleep timer: ' + sleepText() + ' left.');
+    });
+    now.appendChild(plus);
+    head.appendChild(now);
+    var list = el('div', 'sr-list');
+    panel.appendChild(head);
+    panel.appendChild(list);
+    root.appendChild(backdrop);
+    root.appendChild(panel);
+    document.body.appendChild(root);
+    backdrop.addEventListener('click', closeSleep);
+    sleepPanel = { root: root, backdrop: backdrop, panel: panel, list: list, status: status, plus: plus };
+    attachPanelDrag(sleepPanel, closeSleep);
+  }
+  function row(label, onTap, extra) {
+    var r = el('button', 'sr-sleep-row', '<span class="sr-grow">' + esc(label) + '</span>');
+    r.type = 'button';
+    r.addEventListener('click', onTap);
+    if (extra) extra(r);
+    return r;
+  }
+  function renderSleepStatus() {
+    if (!sleepPanel) return;
+    var html = !sleep ? 'Off'
+      : sleep.type === 'time' ? '<span class="sr-sleep-count">' + esc(sleepText()) + '</span>'
+      : sleep.type === 'song' ? 'Fades out at the end of this song' : 'Fades out at the end of this show';
+    if (sleepPanel.status.innerHTML !== html) sleepPanel.status.innerHTML = html;
+    var timed = !!(sleep && sleep.type === 'time');
+    if (sleepPanel.plus.hidden === timed) sleepPanel.plus.hidden = !timed;
+  }
+  function renderSleep() {
+    var list = sleepPanel.list;
+    list.textContent = '';
+    if (sleep) {
+      var off = row('Turn off timer', function () { setSleep(null); closeSleep(); showToast('Sleep timer off.'); });
+      off.classList.add('sr-sleep-off');
+      list.appendChild(off);
+    }
+    [5, 15, 30, 60].forEach(function (m) {
+      list.appendChild(row(m === 60 ? '1 hour' : m + ' minutes', function () { startTimer(m); }));
+    });
+    var songRow = row('End of song', stopAfterSong);
+    if (sleep && sleep.type === 'song') songRow.setAttribute('aria-current', 'true');
+    list.appendChild(songRow);
+    var showRow = row('End of show', stopAfterShow);
+    if (sleep && sleep.type === 'show') showRow.setAttribute('aria-current', 'true');
+    list.appendChild(showRow);
+    // Custom time: tap the time to start it; - and + change it by 5 minutes. (Separate
+    // buttons, not buttons inside a button, so VoiceOver and keyboards reach each one.)
+    var custom = el('div', 'sr-sleep-custom');
+    var start = row(durationLabel(customMinutes), function () { startTimer(customMinutes); });
+    start.setAttribute('aria-label', 'Start timer for ' + durationLabel(customMinutes));
+    custom.appendChild(start);
+    [['−', -5, 'Less time'], ['+', 5, 'More time']].forEach(function (b) {
+      var step = el('button', 'sr-step', b[0]);
+      step.type = 'button';
+      step.setAttribute('aria-label', b[2]);
+      step.addEventListener('click', function (e) {
+        e.stopPropagation();
+        customMinutes = Math.min(720, Math.max(5, customMinutes + b[1]));
+        try { localStorage.setItem(CUSTOM_KEY, String(customMinutes)); } catch (err) {}
+        start.querySelector('.sr-grow').textContent = durationLabel(customMinutes);
+        start.setAttribute('aria-label', 'Start timer for ' + durationLabel(customMinutes));
+        announce(durationLabel(customMinutes));
+      });
+      custom.appendChild(step);
+    });
+    list.appendChild(custom);
+    renderSleepStatus();
+  }
+  function openSleep() {
+    buildSleep();
+    if (!sleepPanel) return;
+    closeSheet();
+    renderSleep();
+    openPanel(sleepPanel, closeSleep);
+  }
+  function closeSleep() { closePanel(sleepPanel); }
+  if (sleep) {
+    // Page reloaded while a timer was running: make sure the app's timer matches.
+    if (sleep.type === 'time') native({ op: 'sleepStart', seconds: (sleep.endsAt - Date.now()) / 1000 });
+    startTick();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Random show: the dice picks any episode the site lists and plays it from the start.
+  // ---------------------------------------------------------------------------
+  var episodeList = null;
+  function episodePathsIn(html) {
+    var out = {}, re = /\/episodes\/[A-Za-z0-9_-]+/g, m;
+    while ((m = re.exec(html))) out[m[0]] = true;
+    return Object.keys(out);
+  }
+  function loadEpisodes() {
+    if (episodeList && episodeList.length) return Promise.resolve(episodeList);
+    var found = {};
+    function add(list) { list.forEach(function (p) { found[p] = true; }); }
+    add(episodePathsIn(document.documentElement.innerHTML));
+    function get(url) {
+      return fetch(url, { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) { add(episodePathsIn(t)); })
+        .catch(function () {});
+    }
+    // The site's database has every show; only if that fails, fall back to the shows
+    // linked from the home page.
+    var before = Object.keys(found).length;
+    return allEpisodes().then(add, function () {}).then(function () {
+      if (Object.keys(found).length > before) return;
+      return get('/');
+    }).then(function () {
+      episodeList = Object.keys(found);
+      return episodeList;
+    });
+  }
+  // Every show, from the site's own database (the same request the site makes, with
+  // the public read key in the site's code). The home page alone only has the newest
+  // few. The address and key are read from the
+  // site's code each time it's needed (and remembered), so a change there is picked up.
+  var DB_KEY = 'sr-db';
+  function siteDatabase(fresh) {
+    if (!fresh) {
+      try {
+        var saved = JSON.parse(localStorage.getItem(DB_KEY) || 'null');
+        if (saved && saved.base && saved.key) return Promise.resolve(saved);
+      } catch (e) {}
+    }
+    var pattern = /"(https:\/\/[a-z0-9]+\.supabase\.co)","(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"/;
+    function scriptsIn(doc) {
+      return [].slice.call(doc.querySelectorAll('script[src]')).map(function (sc) {
+        try { return new URL(sc.getAttribute('src'), location.href).href; } catch (e) { return ''; }
+      }).filter(function (u) { return u.indexOf(location.origin + '/') === 0; });
+    }
+    function search(list, i) {
+      if (i >= list.length) return Promise.reject(new Error('no database'));
+      return fetch(list[i], { credentials: 'same-origin' }).then(function (r) { return r.ok ? r.text() : ''; }).then(function (code) {
+        var m = pattern.exec(code);
+        if (!m) return search(list, i + 1);
+        var db = { base: m[1], key: m[2] };
+        try { localStorage.setItem(DB_KEY, JSON.stringify(db)); } catch (e) {}
+        return db;
+      }, function () { return search(list, i + 1); });
+    }
+    // This page's scripts first, then the home page's (the list is loaded there).
+    return search(scriptsIn(document), 0).catch(function () {
+      return fetch('/', { credentials: 'same-origin' }).then(function (r) { return r.text(); }).then(function (html) {
+        var seen = {};
+        scriptsIn(document).forEach(function (u) { seen[u] = true; });
+        var more = scriptsIn(new DOMParser().parseFromString(html, 'text/html')).filter(function (u) { return !seen[u]; });
+        return search(more, 0);
+      });
+    });
+  }
+  function allEpisodes(retried) {
+    return siteDatabase(retried).then(function (db) {
+      return fetch(db.base + '/rest/v1/episodes?select=id&order=release_date.desc&limit=5000', {
+        headers: { apikey: db.key, Authorization: 'Bearer ' + db.key }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('database ' + r.status);
+        return r.json();
+      });
+    }).then(function (rows) {
+      if (!Array.isArray(rows)) throw new Error('not a list');
+      return rows.filter(function (e) { return e && /^[0-9a-fA-F-]{36}$/.test(e.id || ''); })
+        .map(function (e) { return '/episodes/' + e.id; });
+    }).catch(function (err) {
+      // A saved key that stopped working: look it up again once.
+      if (!retried) { try { localStorage.removeItem(DB_KEY); } catch (e) {} return allEpisodes(true); }
+      throw err;
+    });
+  }
+  function episodeHeading() { return text(document.querySelector('#episode-card-header h1, main h1')); }
+  function goTo(path, storeKey, storeValue) {
+    if (location.pathname.replace(/\/$/, '') === path) return true;
+    if (window.next && window.next.router && window.next.router.push) {
+      window.next.router.push(path);
+      return true;
+    }
+    try { sessionStorage.setItem(storeKey, storeValue); } catch (e) {}
+    location.assign(path);
+    return false; // the page reloads; it picks up again from sessionStorage
+  }
+  // ---------------------------------------------------------------------------
+  // Welcome mini player: before anything plays, the mini player's place shows the
+  // Soulection logo, "This is Soulection Radio" and a play button that starts the
+  // newest show from the beginning. Anything playing replaces it with the real one.
+  // ---------------------------------------------------------------------------
+  var readyCard = null; // the welcome mini player while nothing plays
+  // Fades the welcome mini player out (the real one fades in on top at the same time).
+  function hideReadyCard() {
+    if (!readyCard) return;
+    dropWarm(); // something else is playing: the newest show isn't needed
+    var card = readyCard;
+    readyCard = null;
+    card.style.pointerEvents = 'none';
+    card.classList.add('sr-fade-out');
+    setTimeout(function () { try { card.remove(); } catch (e) {} }, reduceMotion ? 0 : 200);
+  }
+  function cardMarkup() {
+    return '<div class="sr-ready-row">' +
+        '<div class="sr-ready-info">' +
+          '<img class="sr-ready-img" alt="">' +
+          '<div class="sr-ready-texts">' +
+            '<div class="sr-ready-show"></div>' +
+            '<div class="sr-ready-line"><span class="sr-ready-song"></span><span class="sr-ready-artist"></span></div>' +
+          '</div>' +
+        '</div>' +
+        '<button type="button" class="sr-ready-play">' + PLAY + '</button>' +
+      '</div>' +
+      '<div aria-hidden="true">' +
+        '<div class="sr-ready-track"><div class="sr-ready-fill"></div><div class="sr-ready-knob"></div></div>' +
+        '<div class="sr-ready-times"><span class="sr-ready-el"></span><span class="sr-ready-dur"></span></div>' +
+      '</div>';
+  }
+  function showHelloCard(tries) {
+    // Wait for the site to finish loading: changing the page before then makes it
+    // redraw everything.
+    if (!isHydrated()) {
+      if ((tries || 0) < 60) setTimeout(function () { showHelloCard((tries || 0) + 1); }, 250);
+      return;
+    }
+    if (readyCard || liveCard || miniPlayer()) return;
+    var st = npState();
+    if (st && st.paused === false) return; // something is already playing
+    ensureStyle();
+    var last = lastPlayed();
+    if (last) return showLastCard(last);
+    var card = el('div', 'sr-ready sr-hello',
+      '<div class="sr-ready-row">' +
+        '<div class="sr-ready-info"><div class="sr-hello-logo" aria-hidden="true"></div>' +
+          '<div class="sr-ready-texts"><div class="sr-ready-line"><span class="sr-ready-song">This is Soulection Radio.</span></div></div></div>' +
+        '<button type="button" class="sr-ready-play" aria-label="Play the newest show">' + PLAY + '</button>' +
+      '</div>');
+    var playBtn = card.querySelector('.sr-ready-play');
+    playBtn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      playNewestShow(this);
+    });
+    // A tap anywhere on it stays with it: nothing underneath lights up or reacts.
+    card.addEventListener('touchend', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.target.closest && e.target.closest('.sr-ready-play')) playNewestShow(playBtn);
+    }, { passive: false });
+    card.addEventListener('click', function (e) { e.stopPropagation(); });
+    if (!reduceMotion) card.classList.add('sr-rise-in');
+    document.body.appendChild(card);
+    readyCard = card;
+    warmNewest();
+  }
+  // The welcome mini player as "where you left off": the song (or show), its cover and
+  // how far in you were, paused. Play picks it back up.
+  function showLastCard(l) {
+    var card = el('div', 'sr-ready sr-last', cardMarkup());
+    var song = l.kind === 'list' ? l.song : l;
+    var put = function (sel, v) { card.querySelector(sel).textContent = v || ''; };
+    put('.sr-ready-show', l.kind === 'list' ? (l.source === 'mixtape' ? 'Mixtape · ' : '') + (song.show || '') : l.show);
+    put('.sr-ready-song', song.song || l.show || 'Soulection Radio');
+    put('.sr-ready-artist', song.artist || '');
+    put('.sr-ready-el', clock(l.t || 0));
+    put('.sr-ready-dur', l.d ? clock(l.d) : '');
+    var img = card.querySelector('.sr-ready-img');
+    if (song.cover && /^https:\/\//.test(song.cover)) img.src = song.cover; else img.style.display = 'none';
+    var frac = l.d ? Math.min(1, Math.max(0, l.t / l.d)) : 0;
+    card.querySelector('.sr-ready-fill').style.width = (frac * 100) + '%';
+    card.querySelector('.sr-ready-knob').style.left = 'calc(8px + (100% - 16px) * ' + frac.toFixed(4) + ')';
+    var playBtn = card.querySelector('.sr-ready-play');
+    playBtn.setAttribute('aria-label', 'Play ' + (song.song || l.show || 'where you left off'));
+    playBtn.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      resumeLast(l, this);
+    });
+    card.addEventListener('touchend', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.target.closest && e.target.closest('.sr-ready-play')) resumeLast(l, playBtn);
+    }, { passive: false });
+    card.addEventListener('click', function (e) { e.stopPropagation(); });
+    if (!reduceMotion) card.classList.add('sr-rise-in');
+    document.body.appendChild(card);
+    readyCard = card;
+  }
+  // The newest show from the very beginning, played right here: the page you're on
+  // stays, the app's own player plays it and the mini player shows it.
+  // The newest show's page: one quick question to the site's database (just the newest
+  // one), else the first show linked on the page.
+  function newestShowPath() {
+    var fromPage = function () {
+      var a = document.querySelector('main a[href^="/episodes/"], a[href^="/episodes/"]');
+      return a ? a.getAttribute('href').replace(/\/$/, '') : null;
+    };
+    return siteDatabase().then(function (db) {
+      return fetch(db.base + '/rest/v1/episodes?select=id&order=release_date.desc&limit=1', {
+        headers: { apikey: db.key, Authorization: 'Bearer ' + db.key }
+      }).then(function (r) { if (!r.ok) throw new Error('database ' + r.status); return r.json(); });
+    }).then(function (rows) {
+      var id = Array.isArray(rows) && rows[0] && rows[0].id;
+      if (!/^[0-9a-fA-F-]{36}$/.test(id || '')) throw new Error('no id');
+      return '/episodes/' + id;
+    }).catch(function () {
+      return allEpisodes().then(function (list) { return list[0] || fromPage(); }, fromPage);
+    });
+  }
+
+  // Getting the newest show ready while the welcome player is up: its SoundCloud link,
+  // and SoundCloud's player loaded and waiting (paused, silent), so tapping play only
+  // has to start the sound.
+  var warm = null; // {path, info, frame, win, loaded}
+  function warmNewest() {
+    if (warm || !readyCard) return;
+    var mine = warm = { path: null, info: null, frame: null, win: null, loaded: false };
+    newestShowPath().then(function (path) {
+      if (warm !== mine || !path) throw new Error('gone');
+      mine.path = path;
+      return episodeInfo(path);
+    }).then(function (info) {
+      if (warm !== mine || !readyCard || !info.link) throw new Error('gone');
+      mine.info = info;
+      mine.frame = makeFrame(playerURL(info.link, 0, true));
+      mine.win = mine.frame.contentWindow;
+      mine.frame.addEventListener('load', function () { mine.loaded = true; });
+      var n = np();
+      if (n && n.setStandby) n.setStandby(mine.win, true);
+      var cover = info.cover;
+      if (cover) { var pre = new Image(); pre.src = cover; mine.coverImage = pre; }
+    }).catch(function () { if (warm === mine && !mine.frame) warm = null; });
+  }
+  function dropWarm() {
+    var w = warm;
+    warm = null;
+    if (w && w.frame && w.frame !== activeOurs()) removeFrame(w.frame);
+  }
+  // Starts the show that was got ready. Returns false if it isn't ready yet.
+  function playWarm(btn) {
+    var w = warm, n = np();
+    if (!w || !w.frame || !w.info || !n || !n.setActiveFrame || ours.indexOf(w.frame) < 0) return false;
+    warm = null;
+    endPlaylist(false);
+    discardStandby();
+    ours.slice().forEach(function (fr) { if (fr !== w.frame) removeFrame(fr); });
+    var path = w.path, info = w.info, win = w.win;
+    n.setStandby(win, false);
+    n.setActiveFrame(win);
+    directShown = directInfo({ show: 'Show #' + info.number, cover: info.cover, episodeURL: path }, info);
+    n.setDirect(directShown);
+    direct = { number: directShown.number, id: null, heard: true };
+    // Start it through SoundCloud's player and directly, again each moment until it plays
+    // (it may still be finishing loading). After 6 seconds, load it fresh instead.
+    var started = Date.now(), done = false;
+    var onTime = function (e) {
+      var d = e.detail || {};
+      if (d.win === win && d.paused === false) finish();
+    };
+    var finish = function () {
+      if (done) return;
+      done = true;
+      clearInterval(poke);
+      window.removeEventListener('soulection-frametime', onTime);
+    };
+    var kick = function () {
+      if (done) return;
+      if (Date.now() - started > 6000) {
+        finish();
+        if (activeOurs() === w.frame && !lastPlayingAtRecent()) playShowHere(path);
+        return;
+      }
+      try { win.postMessage(JSON.stringify({ method: 'play' }), '*'); } catch (e) {}
+      n.toFrame(win, { play: true, unmute: true });
+    };
+    window.addEventListener('soulection-frametime', onTime);
+    var poke = setInterval(kick, 600);
+    kick();
+    schedule();
+    return true;
+  }
+  function lastPlayingAtRecent() { return Date.now() - lastPlayingAt < 3000; }
+
+  function playNewestShow(btn) {
+    if (btn && btn.getAttribute('aria-busy') === 'true') return;
+    if (btn) btn.setAttribute('aria-busy', 'true');
+    beginStarting();
+    renderPlayButtons();
+    if (playWarm(btn)) return;
+    dropWarm();
+    (function find(tries) {
+      newestShowPath().then(function (path) {
+        if (path) { endPlaylist(false); playShowHere(path); return; }
+        // Not found (no connection?): quietly try again, then just stop.
+        if (tries < 3) setTimeout(function () { find(tries + 1); }, 2000);
+        else stopNewestShow();
+      });
+    })(1);
+  }
+  // Gives up quietly: the welcome player's play button is back, ready to tap again.
+  function stopNewestShow() {
+    var b = readyCard && readyCard.querySelector('.sr-ready-play');
+    if (b) b.removeAttribute('aria-busy');
+    endStarting();
+  }
+  // Plays a show from 0:00 in the app's own player without opening its page. If it
+  // can't, it quietly tries again (a few times), with no message.
+  var diceTry = 0, showSwitch = 0, switchItem = null;
+  function playShowHere(path, tries, onFail, opts) {
+    tries = tries || 1;
+    var relay = !!(opts && opts.relay);
+    var token = ++showSwitch;
+    var n = np();
+    var failed = function () {
+      if (token !== showSwitch) return; // something newer took over
+      if (tries < 3) setTimeout(function () { if (token === showSwitch) playShowHere(path, tries + 1, onFail, opts); }, 1500);
+      else { stopNewestShow(); if (onFail) onFail(); }
+    };
+    if (!n || !n.setActiveFrame) return failed();
+    episodeInfo(path).then(function (info) {
+      if (token !== showSwitch) return;
+      if (!info.link) return failed();
+      var m = np();
+      var oldFrames = [], siteWin = null;
+      if (relay) {
+        // Keep what's playing until the new show plays; then stop and drop it.
+        discardStandby();
+        if (handing) { clearTimeout(handing.timer); clearInterval(handing.poke); handing = null; }
+        oldFrames = ours.slice();
+        var sf = soundcloudFrame();
+        siteWin = sf ? sf.contentWindow : null;
+      } else {
+        retireOurs();
+      }
+      var prevWin = relay && m.activeFrame ? m.activeFrame() : null;
+      var prevShown = directShown, prevDirect = direct;
+      var frame = makeFrame(playerURL(info.link, (opts && opts.start) || 0, false));
+      m.setActiveFrame(frame.contentWindow);
+      if (relay) {
+        var t0 = Date.now();
+        (function watch() {
+          if (token !== showSwitch || !frame.isConnected) return;
+          var k = np(), st = npState();
+          if (k && k.activeFrame && k.activeFrame() !== frame.contentWindow) return; // something else took over
+          if (k && st && st.paused === false && k.activeFrame && k.activeFrame() === frame.contentWindow) {
+            oldFrames.forEach(function (fr) {
+              if (fr === frame) return;
+              try { k.toFrame(fr.contentWindow, { pause: true }); } catch (e) {}
+              removeFrame(fr);
+            });
+            if (siteWin) { try { k.toFrame(siteWin, { pause: true }); } catch (e) {} }
+            return;
+          }
+          if (Date.now() - t0 < 20000) { setTimeout(watch, 250); return; }
+          // The new show never started: drop it and go back to what was playing.
+          removeFrame(frame);
+          if (prevWin && k && k.setActiveFrame) {
+            k.setActiveFrame(prevWin);
+            directShown = prevShown; direct = prevDirect;
+            if (k.setDirect) k.setDirect(prevShown || null);
+          }
+          endStarting(); renderPlayButtons(); schedule();
+        })();
+      }
+      // Don't count on it starting by itself: tell it to play as soon as it has loaded,
+      // and again shortly after, until it's playing.
+      var nudge = function () {
+        var st = npState();
+        if (token !== showSwitch || !frame.isConnected || (st && st.paused === false)) return;
+        try { frame.contentWindow.postMessage(JSON.stringify({ method: 'play' }), '*'); } catch (e) {}
+        var k = np(); if (k && k.toFrame) k.toFrame(frame.contentWindow, { play: true });
+      };
+      frame.addEventListener('load', function () { [600, 1500, 3000].forEach(function (d) { setTimeout(nudge, d); }); });
+      // Not playing after a few seconds: tell it to play again.
+      if (starting) starting.retry = function () {
+        try { frame.contentWindow.postMessage(JSON.stringify({ method: 'play' }), '*'); } catch (e) {}
+        var k = np(); if (k && k.toFrame) k.toFrame(frame.contentWindow, { play: true });
+      };
+      var f = { show: 'Show #' + info.number, cover: info.cover, episodeURL: path };
+      directShown = directInfo(f, info);
+      m.setDirect(directShown);
+      direct = { number: directShown.number, id: null, heard: true };
+      // The welcome player stays until the show is really playing (see renderLiveCard).
+      schedule();
+    }).catch(failed);
+  }
+  // Something else is played (Likes, Mixtape, a show's page): a dice try still waiting
+  // to start lets go, so it can't show a message or switch players later.
+  function cancelShowSwitch() {
+    showSwitch++;
+    if (diceTry) { diceTry++; diceBusy(false); }
+  }
+
+  // The welcome player becomes the real mini player: one solid card that grows from
+  // the welcome player's height to its full height, while the welcome words fade out
+  // and the song's info fades in.
+  function handOver(hello, live) {
+    if (reduceMotion) { try { hello.remove(); } catch (e) {} return; }
+    var d = Math.max(0, live.getBoundingClientRect().height - hello.getBoundingClientRect().height);
+    var ease = 'cubic-bezier(.2,.8,.2,1)';
+    hello.style.zIndex = '31';
+    hello.style.pointerEvents = 'none';
+    hello.style.background = 'transparent';
+    var parts = [].slice.call(live.children);
+    parts.forEach(function (c) { c.style.opacity = '0'; });
+    var clip = function (top) { var v = 'inset(' + top + 'px 0 0 0 round 9px)'; live.style.clipPath = v; live.style.webkitClipPath = v; };
+    clip(d);
+    void live.offsetHeight;
+    // One step at a time: the welcome words fade out, the card grows, then the show's
+    // info fades in (the two sets of words never overlap).
+    live.style.transition = 'clip-path .26s ' + ease + ' .07s,-webkit-clip-path .26s ' + ease + ' .07s';
+    clip(0);
+    parts.forEach(function (c) { c.style.transition = 'opacity .18s ease .21s'; c.style.opacity = '1'; });
+    [].slice.call(hello.children).forEach(function (c) { c.style.transition = 'opacity .1s ease'; c.style.opacity = '0'; });
+    hello.style.transition = 'border-color .3s ease';
+    hello.style.borderColor = 'transparent';
+    setTimeout(function () {
+      try { hello.remove(); } catch (e) {}
+      live.style.transition = '';
+      live.style.clipPath = ''; live.style.webkitClipPath = '';
+      parts.forEach(function (c) { c.style.transition = ''; c.style.opacity = ''; });
+    }, 430);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Safety net: music is playing but the site has no mini player to show it (the
+  // app's own player took over before the site ever played, or the site removed its
+  // player). The app shows its own live one in the same place until the site's is back.
+  // ---------------------------------------------------------------------------
+  var liveCard = null;
+  var PAUSE_ICON = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+  function playerCard() { return miniPlayer() || liveCard; }
+  function renderLiveCard() {
+    if (!isHydrated()) return;
+    var st = npState();
+    var cur = playlist && playlist.current;
+    var oursOn = !!activeOurs();
+    var want = !miniPlayer() && st && st.t != null && (st.paused === false || oursOn || !!cur) &&
+      (!readyCard || st.paused === false); // the welcome player stays until it really plays
+    if (!want) {
+      if (liveCard) { try { liveCard.remove(); } catch (e) {} liveCard = null; }
+      return;
+    }
+    if (!liveCard) {
+      ensureStyle();
+      var hello = readyCard; // the welcome player turns into this one (see handOver)
+      readyCard = null;
+      if (hello) dropWarm(); // (unless it's the one playing now)
+      liveCard = el('div', 'sr-ready sr-live-card' + (hello ? '' : ' sr-fade-in'), cardMarkup());
+      var play = liveCard.querySelector('.sr-ready-play');
+      play.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); togglePlay(); renderLiveCard(); });
+      // A heart for liking the song that's playing (shows up once the song is known).
+      var lh = heartButton('sr-heart-mini');
+      lh.hidden = true;
+      lh.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var s2 = songNow();
+        if (s2) { s2.favoritedAt = Date.now(); toggle(s2); renderLiveCard(); }
+      });
+      play.style.order = '2';
+      play.parentNode.insertBefore(lh, play);
+      // Tapping anywhere but play opens the big player.
+      liveCard.addEventListener('click', function (e) {
+        if (e.target.closest && e.target.closest('.sr-ready-play, .sr-heart')) return;
+        e.stopPropagation();
+        openPlayer();
+      });
+      var info = liveCard.querySelector('.sr-ready-info');
+      keyClickable(info, 'Open player');
+      info.addEventListener('click', function (e) { e.stopPropagation(); openPlayer(); });
+      if (miniTouchMove) liveCard.addEventListener('touchmove', miniTouchMove, { passive: false });
+      addSkipButtons(liveCard);
+      addGrab(liveCard);
+      document.body.appendChild(liveCard);
+      if (hello) handOver(hello, liveCard);
+    }
+    var shown = oursOn && directShown ? directShown : null;
+    var t = currentTrack();
+    var show = (cur && cur.show) || (shown && shown.show) || st.show || (st.number ? 'Show #' + st.number : '');
+    var song = cur ? cur.song : (t ? t.song : (st.title || ''));
+    var artist = cur ? cur.artist : (t ? t.artist : (st.artist || ''));
+    var cover = (cur && cur.cover) || (shown && shown.cover) || st.cover || '';
+    var put = function (sel, v) { var n = liveCard.querySelector(sel); v = v || ''; if (n.textContent !== v) n.textContent = v; };
+    put('.sr-ready-show', show);
+    put('.sr-ready-song', song);
+    put('.sr-ready-artist', artist);
+    put('.sr-ready-el', clock(st.t || 0));
+    put('.sr-ready-dur', st.duration ? clock(st.duration) : '');
+    var img = liveCard.querySelector('.sr-ready-img');
+    if (cover && /^https:\/\//.test(cover)) {
+      if (img.getAttribute('src') !== cover) img.src = cover;
+      img.style.display = '';
+    } else img.style.display = 'none';
+    var frac = st.duration ? Math.min(1, Math.max(0, (st.t || 0) / st.duration)) : 0;
+    liveCard.querySelector('.sr-ready-fill').style.width = (frac * 100) + '%';
+    liveCard.querySelector('.sr-ready-knob').style.left = 'calc(8px + (100% - 16px) * ' + frac.toFixed(4) + ')';
+    var hb = liveCard.querySelector('.sr-heart-mini');
+    if (hb) {
+      var hsong = songNow();
+      revealHeart(hb, !!hsong);
+      if (hsong) setHeart(hb, !!byId(hsong.id), hsong.song);
+    }
+    var pb = liveCard.querySelector('.sr-ready-play');
+    var want2 = playKey();
+    if (pb.getAttribute('data-icon') !== want2) {
+      pb.setAttribute('data-icon', want2);
+      pb.innerHTML = want2 === 'loading' ? SPIN_LOGO : want2 === 'play' ? PLAY : PAUSE_ICON;
+      pb.setAttribute('aria-label', want2 === 'loading' ? 'Starting' : want2 === 'play' ? 'Play' : 'Pause');
+    }
+  }
+  // Opens a song's show page and scrolls to the song, flashing its row.
+  var REVEAL_KEY = 'sr-reveal-song';
+  function showSongInShow(f) {
+    closeSheet();
+    var wantNumber = showNumber(f.show);
+    var oldHeading = location.pathname.replace(/\/$/, '') === f.episodeURL ? null : episodeHeading();
+    if (!goTo(f.episodeURL, REVEAL_KEY, JSON.stringify({ url: f.episodeURL, start: f.start, show: f.show }))) return;
+    revealSong(f.episodeURL, f.start, wantNumber, oldHeading);
+  }
+  function revealSong(url, start, wantNumber, oldHeading) {
+    var deadline = Date.now() + 10000;
+    (function look() {
+      var heading = episodeHeading();
+      var onPage = location.pathname.replace(/\/$/, '') === url &&
+        (oldHeading == null || heading !== oldHeading) &&
+        (!wantNumber || showNumber(heading) === wantNumber);
+      var rows = onPage ? pageRows() : [];
+      var best = null;
+      rows.forEach(function (r) { if (r.start <= start + 1 && (!best || r.start > best.start)) best = r; });
+      if (!best) {
+        if (Date.now() < deadline) setTimeout(look, 250);
+        return;
+      }
+      best.row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      best.row.classList.remove('sr-row-flash');
+      void best.row.offsetWidth;
+      best.row.classList.add('sr-row-flash');
+      setTimeout(function () { best.row.classList.remove('sr-row-flash'); }, 1900);
+    })();
+  }
+
+  // "NEW" on the newest show until you've opened it. The first time, the newest show
+  // is just remembered (so nothing is marked new right after installing).
+  var SEEN_KEY = 'sr-seen-show';
+  // iPhone home page: hides the site's own "Trending tracks" row (only marks it; the
+  // styles above do the hiding, on phones only).
+  function findText(t) {
+    try {
+      var r = document.evaluate("//*[normalize-space(text())='" + t + "']", document.body, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      var out = [];
+      for (var i = 0; i < r.snapshotLength; i++) out.push(r.snapshotItem(i));
+      return out;
+    } catch (e) { return []; }
+  }
+  var trendHidden = null;
+  var trendHiddenSide = [];
+  function renderTrending() {
+    if (location.pathname !== '/') return;
+    var sideDone = trendHiddenSide.length && trendHiddenSide.every(function (n) { return n.isConnected; });
+    if (trendHidden && trendHidden.isConnected && sideDone) return;
+    var featured = findText('Featured episodes')[0];
+    if (!featured) return;
+    var artistsHead = findText('Trending artists')[0];
+    var heads = [];
+    findText('Trending tracks').forEach(function (d) {
+      // The one in the side column, next to "Trending artists".
+      if (artistsHead) {
+        var p = d.parentElement;
+        while (p && !p.contains(artistsHead)) p = p.parentElement;
+        if (p && !p.contains(featured)) { heads.push(d); return; }
+      }
+      if (trendHidden && trendHidden.isConnected) return;
+      // The biggest box around the row that holds nothing else.
+      var sec = d;
+      while (sec.parentElement && sec.parentElement !== document.body && !sec.parentElement.contains(featured) && !/All episodes/.test(sec.parentElement.textContent || '')) sec = sec.parentElement;
+      if (sec === d || !sec.parentElement) return;
+      sec.setAttribute('data-sr-trend-hide', '');
+      trendHidden = sec;
+    });
+    // The side column's lists (on a phone at the very bottom, under the shows): each
+    // list's biggest box that holds neither the other list nor the "Explore the latest
+    // episodes" line, which stays.
+    if (sideDone || !artistsHead) return;
+    heads.unshift(artistsHead);
+    trendHiddenSide = [];
+    heads.forEach(function (h) {
+      var others = heads.filter(function (o) { return o !== h; });
+      var box = h;
+      while (box.parentElement && box.parentElement !== document.body) {
+        var up = box.parentElement;
+        if (up.contains(featured) || others.some(function (o) { return up.contains(o); }) || /Explore the latest/.test(up.textContent || '')) break;
+        box = up;
+      }
+      box.setAttribute('data-sr-trend-hide', '');
+      trendHiddenSide.push(box);
+    });
+  }
+  // Show covers in the list: covers in view or within about three screens (either way)
+  // start loading now instead of waiting their turn.
+  var coverCheck = 0;
+  function checkCovers() {
+    var vh = window.innerHeight || 800;
+    document.querySelectorAll('a[href*="/episodes/"] img').forEach(function (img) {
+      if (img.closest('.sr-fav-root, .sr-ready, .sr-np')) return;
+      var r = img.getBoundingClientRect();
+      if (r.bottom < -vh * 3 || r.top > vh * 4 || !r.width) return;
+      if (!img.complete && img.getAttribute('loading') === 'lazy') img.setAttribute('loading', 'eager');
+    });
+  }
+  function scheduleCoverCheck() {
+    clearTimeout(coverCheck);
+    coverCheck = setTimeout(checkCovers, 500);
+  }
+  window.addEventListener('scroll', scheduleCoverCheck, { passive: true });
+  document.addEventListener('error', function (e) {
+    if (e.target && e.target.tagName === 'IMG') scheduleCoverCheck();
+  }, true);
+  function renderNewBadges() {
+    var seen = 0;
+    try { seen = parseInt(localStorage.getItem(SEEN_KEY) || '0', 10) || 0; } catch (e) {}
+    var opened = episodePath() ? showNumber(episodeHeading()) : null;
+    var titles = [];
+    var links = document.querySelectorAll('a[href*="/episodes/"]');
+    for (var i = 0; i < links.length; i++) {
+      var leaves = links[i].querySelectorAll('h1, h2, h3, h4, p, span, div');
+      for (var j = 0; j < leaves.length; j++) {
+        var t = leaves[j];
+        if (t.children.length && !t.querySelector(':scope > .sr-new')) continue;
+        var m = /^Soulection Radio #(\d+)/.exec(text(t).replace(/\s*NEW$/, ''));
+        if (m) titles.push({ el: t, number: parseInt(m[1], 10) });
+      }
+    }
+    var newest = 0;
+    titles.forEach(function (x) { if (x.number > newest) newest = x.number; });
+    var next = seen;
+    if (!seen && newest) next = newest;
+    if (opened) next = Math.max(next, parseInt(opened, 10));
+    if (next !== seen) { seen = next; try { localStorage.setItem(SEEN_KEY, String(seen)); } catch (e) {} }
+    titles.forEach(function (x) {
+      var badge = x.el.querySelector(':scope > .sr-new');
+      var isNew = x.number > seen;
+      if (isNew && !badge) {
+        badge = el('span', 'sr-new', 'NEW');
+        badge.setAttribute('aria-label', 'new show');
+        x.el.appendChild(badge);
+      } else if (!isNew && badge) {
+        badge.remove();
+      }
+    });
+  }
+
+  // Marks the tracklist row of the song that's playing, on that show's page.
+  function renderPlayingRow() {
+    var rows = episodePath() ? pageRows() : [];
+    var st = npState();
+    var pageNumber = rows.length ? showNumber(episodeHeading()) : null;
+    var playingNumber = direct ? direct.number : (st && st.number);
+    var current = null;
+    if (pageNumber && st && st.t != null && playingNumber === pageNumber) {
+      rows.forEach(function (r) { if (r.start <= st.t + 0.25 && (!current || r.start > current.start)) current = r; });
+    }
+    var marked = document.querySelectorAll('.sr-row-playing');
+    for (var i = 0; i < marked.length; i++) {
+      if (current && marked[i] === current.row) continue;
+      marked[i].classList.remove('sr-row-playing');
+      var old = marked[i].querySelector('.sr-bars');
+      if (old) old.remove();
+    }
+    if (!current) return;
+    if (!current.row.classList.contains('sr-row-playing')) current.row.classList.add('sr-row-playing');
+    var bars = current.songCell.querySelector(':scope > .sr-bars');
+    if (!bars) {
+      bars = el('span', 'sr-bars', '<i></i><i></i><i></i>');
+      bars.setAttribute('aria-hidden', 'true');
+    }
+    // Just left of the heart.
+    var rowHeart = current.songCell.querySelector(':scope > .sr-heart');
+    if (bars.parentNode !== current.songCell || bars.nextElementSibling !== rowHeart) {
+      current.songCell.insertBefore(bars, rowHeart || null);
+    }
+    var paused = !!st.paused;
+    if (bars.classList.contains('sr-paused') !== paused) bars.classList.toggle('sr-paused', paused);
+  }
+
+  // The dice spins from the tap until the new show plays (or the try gives up). A try
+  // that got stuck can never block the dice: after 10 seconds a tap always goes through.
+  var diceBusySince = 0;
+  function diceBusy(on) {
+    if (!dice) return;
+    diceBusySince = on ? Date.now() : 0;
+    if (on) dice.setAttribute('aria-busy', 'true'); else dice.removeAttribute('aria-busy');
+  }
+  function playRandomShow() {
+    if (!dice) return;
+    if (diceBusySince && Date.now() - diceBusySince < 10000) return;
+    diceBusy(true);
+    var mine = ++diceTry;
+    var wasPlaying = !isPaused();
+    try {
+      closeSheet();
+      beginStarting(); // the logo spins in the play button while it switches
+      renderPlayButtons();
+      // Like switching songs in Likes: what's playing keeps playing until the new show
+      // has started (iPhone stops it then). Stopping it first left the new show silent.
+      endPlaylist(false, true);
+    } catch (err) {}
+    var gaveUp = false;
+    var list = new Promise(function (resolve) {
+      setTimeout(function () { gaveUp = true; resolve(episodeList && episodeList.length ? episodeList : []); }, 8000);
+      try { loadEpisodes().then(resolve, function () { resolve([]); }); } catch (err) { resolve([]); }
+    });
+    list.then(function (paths) {
+      if (mine !== diceTry) return;
+      paths = paths || [];
+      var here = location.pathname.replace(/\/$/, '');
+      var playingNow = (directShown && directShown.episodeURL) || ((npState() || {}).episodeURL) || '';
+      var choices = paths.filter(function (p) { return p !== here && p !== playingNow; });
+      if (!choices.length) choices = paths;
+      if (!choices.length) {
+        diceBusy(false); endStarting(); renderPlayButtons();
+        return showToast(gaveUp ? "Couldn't load the list of shows. Tap the dice to try again." : "Couldn't find any shows.");
+      }
+      var path = choices[Math.floor(Math.random() * choices.length)];
+      // Plays right here, from the start, in the app's own player: the page you're on
+      // stays (no jump to the show's page).
+      switchShowHere(path, 0, wasPlaying, mine, function (ok) {
+        diceBusy(false);
+        if (!ok) showToast("The random show didn't start. Tap the dice to try again.");
+      });
+    });
+  }
+
+  // Plays a show from `start` (seconds) right here, without leaving the page: used by
+  // the dice and Continue listening. If something is playing, it switches the way Likes
+  // and Mixtape do: the new show is loaded muted and started (iPhone lets a muted player
+  // start next to a playing one), then it's unmuted and the old one pauses in the same
+  // instant. If nothing is playing, it's simply started. `mine` is the try's number
+  // (diceTry): a newer try or anything else played makes this one let go. `done(ok)` is
+  // called once: true when it plays, false if it never got going (after about 20 seconds
+  // what was playing just carries on).
+  function switchShowHere(path, start, wasPlaying, mine, done) {
+    var finished = false;
+    var finish = function (ok) { if (finished) return; finished = true; if (mine === diceTry) done(ok); };
+    if (wasPlaying) {
+      episodeInfo(path).then(function (info) {
+        if (mine !== diceTry) return;
+        if (!info.link) return finish(false);
+        var label = 'Show #' + info.number;
+        switchItem = { id: 'switch:' + path + ':' + Date.now(), episodeURL: path, start: start, show: label, cover: info.cover, song: label, artist: 'Soulection Radio' };
+        pageFallbackFor = switchItem.id; // stay on this page: no switching through the show's page
+        handoff(switchItem);
+      }).catch(function () { finish(false); });
+    } else {
+      playShowHere(path, 1, function () { finish(false); }, { relay: true, start: start });
+    }
+    var t1 = Date.now(), okSince = 0;
+    (function check() {
+      if (finished || mine !== diceTry) return; // tapped again, or something else was played
+      var st = npState();
+      // Done once the new show has kept playing for 3 seconds (the old player can
+      // briefly come back right after a switch).
+      if (st && st.paused === false && directShown && directShown.episodeURL === path) {
+        if (!okSince) okSince = Date.now();
+        else if (Date.now() - okSince >= 3000) return finish(true);
+      } else okSince = 0;
+      if (Date.now() - t1 > 23000) {
+        // A switch that never got going: stop it, and what was playing carries on.
+        if (handing && switchItem && handing.f === switchItem) {
+          clearTimeout(handing.timer); clearInterval(handing.poke); handing = null;
+          discardStandby();
+        }
+        if (!starting || isPaused()) { endStarting(); renderPlayButtons(); }
+        return finish(false);
+      }
+      setTimeout(check, 1000);
+    })();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mixtape: endless random songs from random shows. Each one goes straight into
+  // Likes and History.
+  // ---------------------------------------------------------------------------
+  var mixNext = null; // a promise for the next song, fetched ahead of time
+  function isMixtape() { return !!(playlist && playlist.source === 'mixtape'); }
+  function renderTape() {
+    if (!tape) return;
+    var on = isMixtape();
+    if (tape.getAttribute('aria-pressed') !== String(on)) tape.setAttribute('aria-pressed', String(on));
+    var label = on ? 'Stop Mixtape' : 'Start Mixtape';
+    if (tape.getAttribute('aria-label') !== label) tape.setAttribute('aria-label', label);
+  }
+  // Picks a random song (not a voice-over, and not the last song) from a random show.
+  // `avoid` is the song playing now: the pick always comes from a different show.
+  // Only songs with real times count: many older shows list every song at 00:00:00,
+  // and a song that seems zero seconds long would be skipped straight away.
+  var MIN_SONG = 30; // seconds
+  var untimedShows = {}; // shows found without usable times (not picked again)
+  function randomSong(tries, avoid) {
+    tries = tries || 0;
+    var avoidNumber = avoid ? showNumber(avoid.show) : null;
+    return loadEpisodes().then(function (paths) {
+      if (!paths.length) throw new Error('no shows');
+      var usable = paths.filter(function (p) { return !untimedShows[p]; });
+      if (usable.length) paths = usable;
+      var others = avoid ? paths.filter(function (p) { return p !== avoid.episodeURL; }) : paths;
+      if (others.length) paths = others;
+      else avoidNumber = null; // only one show: it has to be that one
+      var path = paths[Math.floor(Math.random() * paths.length)];
+      return fetch(path, { credentials: 'same-origin' }).then(function (r) { return r.text(); }).then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var rows = pageRows(doc);
+        var picks = [];
+        for (var i = 0; i < rows.length - 1; i++) {
+          if (rows[i].vo) continue;
+          var len = rows[i + 1].start - rows[i].start;
+          if (rows[i].start > 0 && len >= MIN_SONG && len < 1800) picks.push(i);
+        }
+        if (!picks.length) { untimedShows[path] = true; throw new Error('no timed songs'); }
+        var i2 = picks[Math.floor(Math.random() * picks.length)];
+        var row = rows[i2];
+        var h1 = doc.querySelector('#episode-card-header h1, main h1');
+        var number = showNumber(text(h1));
+        if (!number) throw new Error('no show number');
+        if (avoidNumber && number === avoidNumber) throw new Error('same show');
+        var img = doc.querySelector('#episode-card-header img');
+        var cover = img ? (img.getAttribute('src') || '') : '';
+        if (cover && cover.charAt(0) === '/') cover = location.origin + cover;
+        var item = {
+          id: favId(path, row.start), song: row.song, artist: row.artist, show: 'Show #' + number,
+          episodeURL: path, cover: cover, start: row.start, end: rows[i2 + 1].start, favoritedAt: Date.now()
+        };
+        episodeAudio[path] = soundcloudLink(doc);
+        return item;
+      });
+    }).catch(function (err) {
+      if (tries < 12) return randomSong(tries + 1, avoid);
+      throw err;
+    });
+  }
+  var mixNextItem = null; // the prefetched song, once it's known
+  function prefetchMix() {
+    mixNextItem = null;
+    var p = mixNext = randomSong(0, playlist && playlist.current);
+    p.then(function (item) { if (mixNext === p) mixNextItem = item; }).catch(function () {});
+  }
+  function toggleMixtape() {
+    if (isMixtape()) { endPlaylist(true); showToast('Mixtape off.'); return; }
+    if (tape.getAttribute('aria-busy') === 'true') return;
+    tape.setAttribute('aria-busy', 'true');
+    closeSheet();
+    closePlayer();
+    randomSong().then(function (item) {
+      tape.removeAttribute('aria-busy');
+      endPlaylist(false);
+      playlist = { ids: [item.id], items: [item], pos: 0, mode: 'mixtape', source: 'mixtape', current: null };
+      showToast('Mixtape on. Each song goes into your Likes.');
+      playCurrent();
+      prefetchMix();
+    }).catch(function () {
+      tape.removeAttribute('aria-busy');
+      showToast("Couldn't start Mixtape.");
+    });
+  }
+  // Adds the next random song to the Mixtape and plays it.
+  var mixAdvancing = false; // one next song at a time (updates keep coming while it loads)
+  function mixtapeAdvance() {
+    if (mixAdvancing) return;
+    mixAdvancing = true;
+    var list = playlist;
+    var now = list && list.current;
+    var pending = mixNext || randomSong(0, now);
+    mixNext = null;
+    mixNextItem = null;
+    pending.then(function (item) {
+      // Never the show that's playing (it would just carry on in the same show).
+      if (now && showNumber(item.show) === showNumber(now.show)) return randomSong(0, now);
+      return item;
+    }).then(function (item) {
+      mixAdvancing = false;
+      if (playlist !== list) return; // stopped meanwhile
+      list.items.push(item);
+      list.ids.push(item.id);
+      list.pos = list.ids.length - 1;
+      playCurrent();
+      prefetchMix();
+    }).catch(function () { mixAdvancing = false; if (playlist === list) endPlaylist(true); });
+  }
+  // Every Mixtape song goes straight into Likes (History records it as it plays).
+  function mixtapeLike(f) {
+    if (byId(f.id)) return;
+    var fav = {};
+    for (var k in f) fav[k] = f[k];
+    fav.favoritedAt = Date.now();
+    toggle(fav, true); // no tap feel or announcement for every Mixtape song
+  }
+
+  // The little tab at the top of a mini player.
+  function addGrab(card) {
+    if (card.querySelector(':scope > .sr-grab')) return;
+    var g = el('button', 'sr-grab');
+    g.type = 'button';
+    g.setAttribute('aria-label', 'Open player');
+    g.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openPlayer(); });
+    card.appendChild(g);
+  }
+  // The swipe has no meaning for VoiceOver or a keyboard, so the mini players also hold
+  // two buttons only they see: Previous song and Next song.
+  function addSkipButtons(box) {
+    [['Previous song', function () { previousSong(true); }], ['Next song', function () { nextSong(); }]].forEach(function (b) {
+      var btn = el('button', 'sr-vh sr-skip-btn', esc(b[0]));
+      btn.type = 'button';
+      btn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); b[1](); });
+      box.appendChild(btn);
+    });
+  }
+  // Swipe the mini player sideways to skip, like Spotify: the song info follows the
+  // finger; let go past about a quarter of the way and it slides out, the song changes
+  // and the new one slides in from the other side.
+  var skipTargets = [], skipDx = 0;
+  function miniSkipTargets() {
+    var card = playerCard();
+    if (!card) return [];
+    if (card === liveCard) return [card.querySelector('.sr-ready-info')].filter(Boolean);
+    if (card.querySelector(':scope > .sr-mini-over')) return [card.querySelector('.sr-mo-img'), card.querySelector('.sr-mo-text')].filter(Boolean);
+    return [card.querySelector('img'), card.querySelector('.content-col')].filter(Boolean);
+  }
+  function moveSkip(dx, animate) {
+    var card = playerCard();
+    var w = card ? card.getBoundingClientRect().width : window.innerWidth;
+    skipTargets.forEach(function (n) {
+      n.style.transition = animate ? 'transform .2s cubic-bezier(.2,.8,.2,1),opacity .2s' : 'none';
+      n.style.transform = dx ? 'translateX(' + dx.toFixed(1) + 'px)' : '';
+      n.style.opacity = dx ? String(Math.max(0, 1 - Math.abs(dx) / (w * 0.6))) : '';
+    });
+  }
+  function finishSkip(dx) {
+    var card = playerCard();
+    var w = card ? card.getBoundingClientRect().width : window.innerWidth;
+    var targets = skipTargets;
+    var dir = dx < -w * 0.25 ? 1 : dx > w * 0.25 ? -1 : 0;
+    if (!dir || reduceMotion) {
+      moveSkip(0, !reduceMotion);
+      setTimeout(function () { targets.forEach(function (n) { n.style.transition = ''; }); }, 220);
+      if (dir) dir > 0 ? nextSong() : previousSong(true);
+      return;
+    }
+    moveSkip(-dir * w * 0.6, true);
+    setTimeout(function () {
+      dir > 0 ? nextSong() : previousSong(true);
+      targets.forEach(function (n) {
+        n.style.transition = 'none';
+        n.style.transform = 'translateX(' + (dir * 40) + 'px)';
+        n.style.opacity = '0';
+      });
+      void document.body.offsetHeight;
+      targets.forEach(function (n) {
+        n.style.transition = 'transform .22s cubic-bezier(.2,.8,.2,1),opacity .22s';
+        n.style.transform = '';
+        n.style.opacity = '';
+      });
+      setTimeout(function () { targets.forEach(function (n) { n.style.transition = ''; }); }, 260);
+    }, 200);
+  }
+
+  // Swipe up on the mini player to open the full player, like Spotify.
+  var miniTouchMove = null;
+  // Height of the home bar strip: the bottom safe area (at least 24 points on phones
+  // with a home bar; none on phones with a Home button).
+  var homeBarPx = null;
+  function homeBarStrip() {
+    if (homeBarPx == null) {
+      var probe = el('div');
+      probe.style.cssText = 'position:fixed;bottom:0;height:env(safe-area-inset-bottom);width:0;visibility:hidden';
+      document.body.appendChild(probe);
+      homeBarPx = probe.offsetHeight > 0 ? Math.max(24, probe.offsetHeight) : 0;
+      probe.remove();
+    }
+    return homeBarPx;
+  }
+  function attachOpenGesture() {
+    var y0 = null, x0 = 0, mode = null, track = null;
+    document.addEventListener('touchstart', function (e) {
+      y0 = null; mode = null;
+      if (e.touches.length !== 1 || isOpen() || isPlayerOpen()) return;
+      var t = e.target;
+      var player = playerCard();
+      var onPlayer = player && player.contains(t) && !(t.closest && t.closest('[data-orientation="horizontal"], [role="slider"]'));
+      if (!onPlayer) return;
+      // A swipe that starts on the home bar strip at the very bottom is iOS's (leaving
+      // the app or opening the app switcher), not "open the big player".
+      if (e.touches[0].clientY > window.innerHeight - homeBarStrip()) return;
+      player.classList.add('sr-touching');
+      y0 = e.touches[0].clientY; x0 = e.touches[0].clientX;
+      track = velocityTracker();
+      track.add(y0);
+    }, { passive: true, capture: true });
+    // The player follows the finger as it slides up, like Spotify. This listener sits
+    // on the mini player only (see renderMiniPlayer): one on the whole page would make
+    // every scroll wait for the app's scripts.
+    miniTouchMove = function (e) {
+      if (y0 == null) return;
+      var y = e.touches[0].clientY, dy = y - y0, dx = e.touches[0].clientX - x0;
+      if (!mode) {
+        if (Math.abs(dy) < 8 && Math.abs(dx) < 8) return;
+        // Up: open the big player. Sideways: skip to the next or previous song.
+        mode = dy < 0 && Math.abs(dy) > Math.abs(dx) ? 'open' : Math.abs(dx) > Math.abs(dy) ? 'skip' : 'other';
+        if (mode === 'open' && !beginPlayerDrag()) mode = 'other';
+        if (mode === 'skip') skipTargets = miniSkipTargets();
+      }
+      if (mode === 'skip') {
+        e.preventDefault();
+        skipDx = dx;
+        moveSkip(dx, false);
+        return;
+      }
+      if (mode !== 'open') return;
+      e.preventDefault();
+      track.add(y);
+      setProgress(Math.max(0, Math.min(1, -dy / (fpTravel || window.innerHeight))));
+    };
+    var end = function (ev) {
+      var mp = playerCard();
+      if (mp) setTimeout(function () { mp.classList.remove('sr-touching'); }, 120);
+      if (y0 == null) return;
+      y0 = null;
+      // (A touch iOS took over snaps back instead of skipping.)
+      if (mode === 'skip') { mode = null; finishSkip(ev && ev.type === 'touchcancel' ? 0 : skipDx); return; }
+      if (mode !== 'open') return;
+      mode = null;
+      settlePlayer(-track.velocity() / (fpTravel || window.innerHeight));
+    };
+    document.addEventListener('touchend', end, { passive: true, capture: true });
+    // A touch taken over by iOS (a system swipe, leaving the app) must not leave the
+    // half-opened player behind.
+    document.addEventListener('touchcancel', end, { passive: true, capture: true });
+    // Tapping the mini player (anywhere but its buttons and slider) opens it too,
+    // and play/pause goes straight to the audio so it reacts right away.
+    document.addEventListener('click', function (e) {
+      var player = miniPlayer();
+      var t = e.target;
+      if (!player || !t || !t.closest || !player.contains(t)) return;
+      var btn = t.closest('button, a, input, [role="slider"], [data-orientation="horizontal"]');
+      if (btn) {
+        // Play/pause goes straight to the audio only; the site's button follows
+        // along from the player's play/pause events.
+        if (btn === sitePlayButton() && fastPlayPause()) { e.preventDefault(); e.stopPropagation(); }
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      openPlayer();
+    }, true);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Snappier play/pause
+  // ---------------------------------------------------------------------------
+  var optimistic = null; // {paused, until} shown right after a tap, before the player confirms
+  function sitePlayButton() {
+    var player = miniPlayer();
+    var row = player && player.querySelector('.content-col');
+    row = row && row.parentElement && row.parentElement.parentElement;
+    return row ? row.querySelector(':scope > button:not(.sr-heart)') : null;
+  }
+  function isPaused() {
+    if (optimistic && Date.now() < optimistic.until) return optimistic.paused;
+    var st = npState();
+    return !st || st.paused !== false;
+  }
+  // Sends play/pause straight to the audio in the player. Returns false when the
+  // player hasn't reported its state yet, so the site's own button handles it.
+  function fastPlayPause() {
+    var st = npState();
+    var n = np();
+    if (!st || st.paused == null || !n || !n.play) return false;
+    var wantPause = !isPaused();
+    if (wantPause) n.pause(); else n.play();
+    optimistic = { paused: wantPause, until: Date.now() + 1500 };
+    renderPlayer();
+    return true;
+  }
+  function togglePlay() {
+    // Tapping while a show is starting stops it.
+    if (starting) { endStarting(); var n0 = np(); if (n0 && n0.pause) n0.pause(); renderPlayButtons(); return; }
+    var wasPaused = isPaused();
+    if (wasPaused) beginStarting(function () { var n = np(); if (n && n.play) n.play(); });
+    if (fastPlayPause()) return;
+    var btn = sitePlayButton();
+    if (btn) btn.click();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Starting: from pressing play until the sound starts, the Soulection logo spins in
+  // the play buttons. It only shows if starting takes more than a moment (no flash
+  // when the music resumes right away). If the sound hasn't started after a few
+  // seconds, it's quietly tried again; no message.
+  // ---------------------------------------------------------------------------
+  var starting = null; // {since, last, retry}
+  var startWatch = null;
+  var SPIN_LOGO = '<span class="sr-spin-logo" aria-hidden="true"></span>';
+  var BARS = '<span class="sr-bars" aria-hidden="true"><i></i><i></i><i></i></span>';
+  function beginStarting(retry) {
+    starting = { since: Date.now(), last: Date.now(), retry: retry || null };
+    setTimeout(renderPlayButtons, 420);
+    if (!startWatch) startWatch = setInterval(function () {
+      if (!starting) { clearInterval(startWatch); startWatch = null; return; }
+      var now = Date.now();
+      if (now - starting.since > 30000) { endStarting(); return; }
+      if (starting.retry && now - starting.last > 5000) {
+        starting.last = now;
+        try { starting.retry(); } catch (e) {}
+      }
+    }, 1000);
+  }
+  function endStarting() {
+    if (!starting) return;
+    starting = null;
+    renderPlayButtons();
+  }
+  // 'loading', 'play' or 'pause': what the play buttons show now.
+  function playKey() {
+    if (starting && Date.now() - starting.since >= 400) return 'loading';
+    return isPaused() ? 'play' : 'pause';
+  }
+  function renderPlayButtons() {
+    var mp = miniPlayer();
+    if (mp) renderMiniOverlay(mp);
+    renderLiveCard();
+    renderPlayer();
+    var hb = readyCard && readyCard.querySelector('.sr-ready-play');
+    if (hb) {
+      var spin = !!starting;
+      if (hb.getAttribute('data-icon') !== (spin ? 'loading' : 'play')) {
+        hb.setAttribute('data-icon', spin ? 'loading' : 'play');
+        hb.innerHTML = spin ? SPIN_LOGO : PLAY;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Full-size player (tap or swipe up on the mini player)
+  // ---------------------------------------------------------------------------
+  var fp = null; // full player elements
+  var fpTimer = null;
+  var scrubbing = null; // {t} while dragging the progress bar
+  var PREV = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg>';
+  var NEXT = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>';
+  var PLAYBIG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>';
+  var PAUSEBIG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>';
+  var CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+  var AIRPLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="14" r="4"/><path d="M12 6h.01"/></svg>';
+
+  function isPlayerOpen() { return !!(fp && fp.root.classList.contains('sr-open')); }
+  function bigCover(src) {
+    if (!src) return '';
+    return src.replace(/([?&])w=\d+/, '$1w=1080').replace(/-(large|t\d+x\d+)\./, '-t500x500.');
+  }
+  function miniShowLine() {
+    var player = miniPlayer();
+    if (!player && liveCard) return text(liveCard.querySelector('.sr-ready-show'));
+    var lines = player ? player.querySelectorAll('.content-col > div') : [];
+    return lines.length ? text(lines[0]) : '';
+  }
+
+  function buildPlayer() {
+    if (fp || !document.body) return;
+    var root = el('div', 'sr-fav-root sr-np');
+    root.hidden = true;
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-label', 'Now playing');
+    root.innerHTML =
+      '<div class="sr-np-bg"></div>' +
+      '<div class="sr-np-inner">' +
+        '<div class="sr-np-top">' +
+          '<button type="button" class="sr-np-icon sr-np-close" aria-label="Close player">' + CHEVRON + '</button>' +
+          '<div class="sr-np-from"><div class="sr-np-from-label">Playing from</div><div class="sr-np-show"></div></div>' +
+          '<button type="button" class="sr-np-icon sr-np-more" aria-label="Share or find this song" aria-expanded="false">' + MORE + '</button>' +
+        '</div>' +
+        '<div class="sr-np-art"><img class="sr-np-cover" alt=""></div>' +
+        '<div class="sr-np-meta"><div class="sr-np-text"><div class="sr-np-title"></div><div class="sr-np-artist"></div></div></div>' +
+        '<div class="sr-np-bar"><div class="sr-np-track"><div class="sr-np-fill"></div><div class="sr-np-knob"></div></div>' +
+          '<div class="sr-np-times"><span class="sr-np-elapsed">0:00</span><span class="sr-np-left">-0:00</span></div></div>' +
+        '<div class="sr-np-controls">' +
+          '<button type="button" class="sr-np-icon sr-np-prev" aria-label="Previous song">' + PREV + '</button>' +
+          '<button type="button" class="sr-np-play" aria-label="Play"></button>' +
+          '<button type="button" class="sr-np-icon sr-np-next" aria-label="Next song">' + NEXT + '</button>' +
+        '</div>' +
+        '<div class="sr-np-extras">' +
+          '<button type="button" class="sr-np-icon sr-np-airplay" aria-label="Speaker">' + AIRPLAY + '</button>' +
+          '<button type="button" class="sr-np-songs-btn" aria-expanded="false" aria-controls="sr-np-songs">Up Next</button>' +
+          '<button type="button" class="sr-np-icon sr-np-sleep" aria-label="Sleep timer">' + MOON + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="sr-np-songs" id="sr-np-songs" role="region" aria-label="Up Next">' +
+        '<div class="sr-np-songs-head"><img alt=""><div class="sr-np-songs-title"></div>' +
+          '<button type="button" class="sr-np-icon sr-np-songs-close" aria-label="Back to the cover">' + CHEVRON + '</button></div>' +
+        '<div class="sr-np-songs-list" tabindex="0" aria-label="Songs coming up"></div>' +
+      '</div>';
+    document.body.appendChild(root);
+    fp = {
+      root: root, bg: root.querySelector('.sr-np-bg'), show: root.querySelector('.sr-np-show'),
+      inner: root.querySelector('.sr-np-inner'),
+      from: root.querySelector('.sr-np-from'),
+      cover: root.querySelector('.sr-np-cover'), title: root.querySelector('.sr-np-title'),
+      artist: root.querySelector('.sr-np-artist'), meta: root.querySelector('.sr-np-meta'),
+      track: root.querySelector('.sr-np-track'), fill: root.querySelector('.sr-np-fill'),
+      knob: root.querySelector('.sr-np-knob'), elapsed: root.querySelector('.sr-np-elapsed'),
+      left: root.querySelector('.sr-np-left'), play: root.querySelector('.sr-np-play'),
+      sleep: root.querySelector('.sr-np-sleep'), heart: heartButton('sr-np-heart'),
+      songsBtn: root.querySelector('.sr-np-songs-btn'),
+      songs: root.querySelector('.sr-np-songs'), songsList: root.querySelector('.sr-np-songs-list')
+    };
+    fp.meta.appendChild(fp.heart);
+    root.querySelector('.sr-np-close').addEventListener('click', closePlayer);
+    // "Playing from <show>": opens that show's tracklist at the playing song.
+    keyClickable(root.querySelector('.sr-np-from'), 'Open the show that is playing');
+    root.querySelector('.sr-np-from').addEventListener('click', function () {
+      var f = (playlist && playlist.current) || currentTrack();
+      if (!f || !f.episodeURL) {
+        var st = npState();
+        if (!st || !st.episodeURL) return;
+        f = { episodeURL: st.episodeURL, start: st.t || 0, show: st.show };
+      }
+      closePlayer();
+      showSongInShow(f);
+    });
+    fp.play.addEventListener('click', togglePlay);
+    root.querySelector('.sr-np-prev').addEventListener('click', function () { previousSong(); });
+    root.querySelector('.sr-np-next').addEventListener('click', nextSong);
+    fp.sleep.addEventListener('click', function () { openSleep(); });
+    root.querySelector('.sr-np-airplay').addEventListener('click', function () { native({ op: 'airplay' }); });
+    root.querySelector('.sr-np-more').addEventListener('click', function () {
+      var f = (playlist && playlist.current) || currentTrack();
+      if (!f) {
+        // Between songs (the intro or the host talking): share or find the show itself.
+        var st = npState();
+        if (st && st.episodeURL) {
+          var showName = (st.show || ('Show #' + st.number)).split(' | ')[0];
+          f = { song: 'Soulection Radio ' + showName.replace(/^Show /, ''), artist: 'Soulection', show: st.show, episodeURL: st.episodeURL, start: st.t != null ? Math.floor(st.t) : null };
+        }
+      }
+      if (npMenu) { closeNpActions(); return; } // tap again: close
+      if (f) openNpActions(f, this); else showToast('Play a show first.');
+    });
+    fp.heart.addEventListener('click', function () {
+      var t = songNow();
+      if (t) { t.favoritedAt = Date.now(); toggle(t); renderPlayer(); }
+    });
+    fp.songsBtn.addEventListener('click', function () { setSongsOpen(!fp.root.classList.contains('sr-np-songs-open')); });
+    root.querySelector('.sr-np-songs-close').addEventListener('click', function () { setSongsOpen(false); });
+    fp.songsList.addEventListener('click', function (e) {
+      var heart = e.target.closest && e.target.closest('.sr-heart');
+      var go = e.target.closest && e.target.closest('.sr-np-song-go');
+      var row = e.target.closest && e.target.closest('.sr-np-song');
+      if (!row) return;
+      if (row.hasAttribute('data-q')) {
+        var q = +row.getAttribute('data-q');
+        var rows = queueRows(), item = null;
+        rows.forEach(function (r) { if (r.pos === q) item = r.f; });
+        if (heart) {
+          if (item) { item.favoritedAt = item.favoritedAt || Date.now(); toggle(item); renderSongs(true); renderPlayer(); }
+          return;
+        }
+        if (!go || !playlist) return;
+        if (q === -1) { nextFavorite(); return; }       // Mixtape's next song
+        if (q === playlist.pos) return;                  // already playing
+        playlist.pos = q;
+        playCurrent();
+        renderSongs(true);
+        return;
+      }
+      var f = songRowFavorite(+row.getAttribute('data-i'));
+      if (heart) {
+        if (f) { f.favoritedAt = Date.now(); toggle(f); renderSongs(true); renderPlayer(); }
+        return;
+      }
+      if (!go) return;
+      playSongInShow(+row.getAttribute('data-i'));
+    });
+    attachScrub();
+    attachPlayerDrag();
+  }
+
+  // Up Next: inside the big player, the songs coming up (in Likes, History or Mixtape)
+  // or the show's song list (in a show).
+  function setSongsOpen(on) {
+    if (!fp) return;
+    fp.root.classList.toggle('sr-np-songs-open', on);
+    fp.songsBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    if (on) {
+      renderSongs(true);
+      var now = fp.songsList.querySelector('.sr-now');
+      fp.songsList.scrollTop = now ? Math.max(0, now.offsetTop - fp.songsList.clientHeight / 2 + now.offsetHeight / 2) : 0;
+      var close = fp.songs.querySelector('.sr-np-songs-close');
+      try { close.focus({ preventScroll: true }); } catch (e) {}
+    } else {
+      try { fp.songsBtn.focus({ preventScroll: true }); } catch (e) {}
+    }
+  }
+  function songRowFavorite(i) { return trackFavorite(npState(), i); }
+  function renderSongs(force) {
+    // Keep keyboard / VoiceOver focus on the same row when the list is redrawn.
+    var a = document.activeElement;
+    var focusRow = a && fp.songsList.contains(a) && a.closest('.sr-np-song');
+    var focusAt = focusRow ? focusRow.getAttribute('data-i') + (a.classList.contains('sr-heart') ? 'h' : 'g') : null;
+    renderSongsList(force);
+    if (focusAt) {
+      var back = fp.songsList.querySelector('.sr-np-song[data-i="' + parseInt(focusAt, 10) + '"] ' + (/h$/.test(focusAt) ? '.sr-heart' : '.sr-np-song-go'));
+      if (back) { try { back.focus({ preventScroll: true }); } catch (e) {} }
+    }
+  }
+  // In Likes, History or Mixtape: the songs coming up in that list.
+  var SOURCE_NAMES = { favorites: 'Likes', history: 'History', mixtape: 'Mixtape' };
+  function queueRows() {
+    var rows = [];
+    if (!playlist || !playlist.current) return rows;
+    for (var i = playlist.pos; i < playlist.ids.length && rows.length < 100; i++) {
+      var g = lookup(playlist.source, playlist.ids[i]);
+      if (g) rows.push({ pos: i, f: g });
+    }
+    if (playlist.source === 'mixtape' && mixNextItem && playlist.pos >= playlist.ids.length - 1) rows.push({ pos: -1, f: mixNextItem });
+    return rows;
+  }
+  function renderQueue(force) {
+    var rows = queueRows();
+    var key = 'q|' + playlist.source + '|' + playlist.pos + '|' + rows.length + '|' + isPaused() + '|' + favorites.length + '|' + (mixNextItem ? mixNextItem.id : '');
+    if (!force && fp.songsList.__key === key) return;
+    fp.songsList.__key = key;
+    var img = fp.songs.querySelector('.sr-np-songs-head img');
+    var cover = bigCover((playlist.current && playlist.current.cover) || '');
+    if (cover && img.getAttribute('src') !== cover) img.src = cover;
+    var later = Math.max(0, rows.length - 1);
+    fp.songs.querySelector('.sr-np-songs-title').innerHTML = 'Up Next<small>From ' + esc(SOURCE_NAMES[playlist.source] || 'your list') + (playlist.source === 'mixtape' ? '' : ' · ' + later + (later === 1 ? ' song' : ' songs') + ' after this one') + '</small>';
+    fp.songsList.innerHTML = rows.map(function (r, n) {
+      var g = r.f, now = n === 0;
+      var on = !!byId(g.id);
+      var showName = (g.show || '').split(' | ')[0];
+      return '<div class="sr-np-song' + (now ? ' sr-now' : '') + '" data-q="' + r.pos + '">' +
+        '<button type="button" class="sr-np-song-go"' + (now ? ' aria-current="true"' : '') + ' aria-label="' + esc(g.song + (g.artist ? ' by ' + g.artist : '') + ', ' + showName + (now ? ', playing now' : '')) + '">' +
+          '<span class="sr-np-song-t">' + esc(showName.replace(/^Show /, '')) + '</span>' +
+          '<span><span class="sr-np-song-name">' + (now && !isPaused() ? BARS : '') + esc(g.song) + '</span>' +
+          (g.artist ? '<span class="sr-np-song-artist">' + esc(g.artist) + '</span>' : '') + '</span>' +
+        '</button><button type="button" class="sr-heart" aria-pressed="' + on + '" aria-label="' + esc((on ? 'Unlike ' : 'Like ') + g.song) + '">' + HEART + '</button></div>';
+    }).join('');
+  }
+  function renderSongsList(force) {
+    if (playlist && playlist.current) return renderQueue(force);
+    var st = npState() || {};
+    var tracks = st.tracks || [];
+    var key = (st.episodeURL || '') + '|' + st.index + '|' + tracks.length + '|' + isPaused() + '|' + favorites.length;
+    if (!force && fp.songsList.__key === key) return;
+    fp.songsList.__key = key;
+    var img = fp.songs.querySelector('.sr-np-songs-head img');
+    var cover = bigCover(st.cover || '');
+    if (cover && img.getAttribute('src') !== cover) img.src = cover;
+    var showName = (st.show || (st.number ? 'Show #' + st.number : '')).split(' | ')[0];
+    fp.songs.querySelector('.sr-np-songs-title').innerHTML = esc(showName) + '<small>' + tracks.length + (tracks.length === 1 ? ' song' : ' songs') + '</small>';
+    if (!tracks.length) {
+      fp.songsList.innerHTML = '<div class="sr-empty">The song list for this show isn\'t available.</div>';
+      return;
+    }
+    fp.songsList.innerHTML = tracks.map(function (t, i) {
+      var now = i === st.index;
+      var name = t.title || t.artist || '';
+      var who = t.title ? (t.artist || '') : '';
+      var f = songRowFavorite(i);
+      var heart = '';
+      if (f) {
+        var on = !!byId(f.id);
+        heart = '<button type="button" class="sr-heart" aria-pressed="' + on + '" aria-label="' + esc((on ? 'Unlike ' : 'Like ') + name) + '">' + HEART + '</button>';
+      }
+      return '<div class="sr-np-song' + (now ? ' sr-now' : '') + '" data-i="' + i + '">' +
+        '<button type="button" class="sr-np-song-go"' + (now ? ' aria-current="true"' : '') + ' aria-label="' + esc(clock(t.start) + ', ' + name + (who ? ' by ' + who : '') + (now ? ', playing now' : '')) + '">' +
+          '<span class="sr-np-song-t">' + esc(clock(t.start)) + '</span>' +
+          '<span><span class="sr-np-song-name">' + (now && !isPaused() ? BARS : '') + esc(name) + '</span>' +
+          (who ? '<span class="sr-np-song-artist">' + esc(who) + '</span>' : '') + '</span>' +
+        '</button>' + heart + '</div>';
+    }).join('');
+  }
+  // Jumps to a song in the show that's playing. Picking a song yourself leaves Likes,
+  // History or Mixtape, like tapping a song in a show's tracklist.
+  function playSongInShow(i) {
+    var st = npState();
+    var t = st && st.tracks && st.tracks[i];
+    var n = np();
+    if (!t || !n) return;
+    if (playlist) leavePlaylistKeepPlaying();
+    n.seek(t.start);
+    if (isPaused()) { beginStarting(function () { var k = np(); if (k && k.play) k.play(); }); n.play && n.play(); }
+    renderPlayer();
+  }
+
+  // Opening and closing are driven by a progress value p (0 = closed, 1 = open)
+  // with spring physics.
+  var fpP = 0, fpV = 0, fpAnim = null;
+  function velocityTracker() {
+    var pts = [];
+    return {
+      add: function (y) { var t = performance.now(); pts.push({ y: y, t: t }); while (pts.length > 2 && t - pts[0].t > 100) pts.shift(); },
+      velocity: function () { // px per second, positive = downwards
+        if (pts.length < 2) return 0;
+        var a = pts[0], b = pts[pts.length - 1];
+        return b.t > a.t ? (b.y - a.y) / ((b.t - a.t) / 1000) : 0;
+      }
+    };
+  }
+  // The big player grows out of the mini player: it starts as exactly the mini player's
+  // card, and its edges open out to the whole screen as it rises with the finger. The
+  // card turns solid over the first stretch (the mini player's info fades away under
+  // it) and the big player's cover and controls fade in over the last stretch. Nothing
+  // flies around inside it. Closing shrinks it back into the mini player.
+  var fpFrom = null; // the mini player card: {top, left, right, bottom, radius}
+  function miniCard() {
+    var mini = playerCard();
+    var W = window.innerWidth, H = window.innerHeight;
+    if (!mini) return { top: H - 120, left: 0, right: 0, bottom: 0, radius: 0 };
+    var r = mini.getBoundingClientRect();
+    var radius = parseFloat(getComputedStyle(mini).borderTopLeftRadius) || 0;
+    return { top: Math.max(0, r.top), left: Math.max(0, r.left), right: Math.max(0, W - r.right), bottom: Math.max(0, H - r.bottom), radius: radius };
+  }
+  // How far a drag travels to open fully: the mini player's top edge to the top.
+  function playerTravel() { return Math.max(120, (fpFrom || miniCard()).top); }
+  var fpTravel = 0;
+  var BG_RGB = BG.replace(/^rgb\(|\)$/g, '');
+  // While closing, the mini player is measured every frame: where it sits can still
+  // change as the page settles, so the card always lands exactly on it.
+  var fpClosing = false;
+  function setClosing(on) {
+    fpClosing = on;
+    // The page behind is let go right away, so it's already in its final spot.
+    if (on) document.documentElement.classList.remove('sr-lock');
+    else if (fp && isPlayerOpen()) document.documentElement.classList.add('sr-lock');
+  }
+  function setProgress(p) {
+    fpP = p;
+    if (!fpFrom || (fpClosing && p < 1)) fpFrom = miniCard();
+    if (!fpTravel) fpTravel = playerTravel();
+    var e = Math.max(0, Math.min(1, p)), k = 1 - e, c = fpFrom;
+    var root = fp.root.style;
+    if (root.transform !== 'none') root.transform = 'none';
+    var clip = 'inset(' + (c.top * k).toFixed(1) + 'px ' + (c.right * k).toFixed(1) + 'px ' +
+      (c.bottom * k).toFixed(1) + 'px ' + (c.left * k).toFixed(1) + 'px round ' + (c.radius * k).toFixed(1) + 'px)';
+    root.clipPath = clip;
+    root.webkitClipPath = clip;
+    var solid = Math.min(1, e / 0.25);
+    root.backgroundColor = 'rgba(' + BG_RGB + ',' + solid.toFixed(3) + ')';
+    fp.bg.style.opacity = (0.35 * Math.min(1, e / 0.5)).toFixed(3);
+    var show = Math.max(0, Math.min(1, (e - 0.65) / 0.35)); // the details come in last
+    fp.inner.style.opacity = show.toFixed(3);
+    fp.inner.style.transform = 'translate3d(0,' + ((1 - show) * 24).toFixed(1) + 'px,0)';
+    // Up Next (when it's open) fades with the rest, so its rows don't sit still while
+    // the card closes over them.
+    var so = show >= 1 ? '' : show.toFixed(3);
+    if (fp.songs.style.opacity !== so) fp.songs.style.opacity = so;
+    placeFly(e, c, k);
+  }
+  // While the card grows, the mini player's row rides along at its top edge and fades
+  // away, and only the cover travels: from the mini player's thumbnail to the big cover.
+  // Closing runs the same thing backwards. Set up when the player leaves either end,
+  // cleared once it is fully open or closed.
+  var fly = null; // {img, from, to, row, hidden: [[node, visibility]]}
+  function miniThumb() {
+    var card = playerCard();
+    if (!card) return null;
+    var sel = card === liveCard ? '.sr-ready-img' : (card.querySelector(':scope > .sr-mini-over') ? '.sr-mo-img' : 'img');
+    var n = card.querySelector(sel);
+    return n && n.getBoundingClientRect().width ? n : null;
+  }
+  function bigCoverRect() {
+    var prev = fp.inner.style.transform;
+    fp.inner.style.transform = 'none';
+    var r = fp.cover.getBoundingClientRect();
+    fp.inner.style.transform = prev;
+    return r && r.width ? r : null;
+  }
+  function startFly() {
+    endFly();
+    if (reduceMotion) return;
+    var card = playerCard();
+    if (!card) return;
+    var f = fly = { hidden: [] };
+    var hide = function (n) { if (!n) return; f.hidden.push([n, n.style.visibility]); n.style.visibility = 'hidden'; };
+    try {
+      // With Up Next open the big cover is under the list: only the card shrinks.
+      var songsOpen = fp.root.classList.contains('sr-np-songs-open');
+      var thumb = songsOpen ? null : miniThumb(), to = songsOpen ? null : bigCoverRect();
+      var src = fp.cover.getAttribute('src') ? (fp.cover.currentSrc || fp.cover.src) : (thumb && (thumb.currentSrc || thumb.src));
+      if (thumb && to && src) {
+        var img = el('img', 'sr-np-fly');
+        img.alt = '';
+        img.setAttribute('aria-hidden', 'true');
+        img.src = src;
+        fp.root.appendChild(img);
+        f.img = img;
+        f.thumb = thumb;
+        f.from = thumb.getBoundingClientRect();
+        f.to = to;
+        f.r0 = parseFloat(getComputedStyle(thumb).borderTopLeftRadius) || 4;
+        hide(fp.cover); hide(thumb);
+      }
+      // A picture of the mini player's row (song, artist, buttons) for the card's top.
+      var cr = card.getBoundingClientRect();
+      var row = el('div', 'sr-np-ghost');
+      row.setAttribute('aria-hidden', 'true');
+      row.inert = true;
+      var copy = card.cloneNode(true);
+      copy.removeAttribute('id');
+      copy.querySelectorAll('[id]').forEach(function (n) { n.removeAttribute('id'); });
+      // The tab stays on the copy, so it rides with the card.
+      copy.querySelectorAll('iframe, audio, video, script').forEach(function (n) { n.remove(); });
+      var cs = copy.style;
+      cs.position = 'relative'; cs.inset = 'auto'; cs.left = cs.top = cs.right = cs.bottom = 'auto';
+      cs.margin = '0'; cs.transform = 'none'; cs.width = cr.width + 'px'; cs.height = cr.height + 'px';
+      cs.maxWidth = 'none'; cs.opacity = '1'; cs.background = 'transparent'; cs.boxShadow = 'none'; cs.border = '0';
+      // The thumbnail is the travelling cover now, so the copy leaves its spot empty.
+      var ct = copy.querySelector(card === liveCard ? '.sr-ready-img' : (card.querySelector(':scope > .sr-mini-over') ? '.sr-mo-img' : 'img'));
+      if (ct) ct.style.visibility = 'hidden';
+      row.style.width = cr.width + 'px';
+      row.appendChild(copy);
+      fp.root.appendChild(row);
+      f.row = row;
+      f.card = card;
+      f.dx = cr.left;
+      // Line the copy's song text up exactly with the real one's (the copy loses the
+      // card's position and border, which could leave it a few points off).
+      f.adjX = 0; f.adjY = 0;
+      var anchorSel = card === liveCard ? '.sr-ready-info' : (card.querySelector(':scope > .sr-mini-over') ? '.sr-mo-text' : '.content-col');
+      var ra = card.querySelector(anchorSel), ca = copy.querySelector(anchorSel);
+      if (ra && ca) {
+        row.style.transform = 'translate3d(0,0,0)';
+        var rr = ra.getBoundingClientRect(), qr = ca.getBoundingClientRect(), rb = copy.getBoundingClientRect();
+        if (rr.width && qr.width) {
+          f.adjX = (rr.left - cr.left) - (qr.left - rb.left);
+          f.adjY = (rr.top - cr.top) - (qr.top - rb.top);
+        }
+      }
+      // The card is the mini player now: the real one steps aside (faded out, so it can
+      // fade back in under the copy at the very end instead of switching at once).
+      f.cardOpacity = card.style.opacity;
+      card.style.opacity = '0';
+    } catch (err) { endFly(); }
+  }
+  function endFly() {
+    if (!fly) return;
+    var f = fly;
+    fly = null;
+    if (f.img) f.img.remove();
+    if (f.row) f.row.remove();
+    if (f.card) f.card.style.opacity = f.cardOpacity || '';
+    f.hidden.forEach(function (h) { h[0].style.visibility = h[1]; });
+  }
+  var lerp = function (a, b, t) { return a + (b - a) * t; };
+  function placeFly(e, c, k) {
+    if (!fp || fp.root.hidden) return;
+    if (e >= 1) { endFly(); return; }
+    if (!fly) startFly();
+    if (!fly) return;
+    var f = fly;
+    if (fpClosing) {
+      if (f.thumb && f.thumb.isConnected) { var tr = f.thumb.getBoundingClientRect(); if (tr.width) f.from = tr; }
+      if (f.card && f.card.isConnected) f.dx = f.card.getBoundingClientRect().left;
+    }
+    // A solid card from the start, like the mini player it grew out of.
+    fp.root.style.backgroundColor = BG;
+    if (f.img) {
+      var a = f.from, b = f.to, s = f.img.style;
+      // Rides inside the growing card: from where the thumbnail sat in the row to the
+      // big cover's spot, growing as the card does.
+      var t = e;
+      var x = lerp(a.left - (f.dx || 0) * e, b.left, t);
+      var y = c.top * k + lerp(a.top - c.top, b.top, t);
+      s.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0)';
+      s.width = lerp(a.width, b.width, t).toFixed(1) + 'px';
+      s.height = lerp(a.height, b.height, t).toFixed(1) + 'px';
+      s.borderRadius = lerp(f.r0, 6, t).toFixed(1) + 'px';
+    }
+    if (f.row) {
+      // Pinned to the growing card's top edge; gone by a third of the way.
+      f.row.style.transform = 'translate3d(' + (f.dx * k + (f.adjX || 0)).toFixed(1) + 'px,' + (c.top * k + (f.adjY || 0)).toFixed(1) + 'px,0)';
+      f.row.style.opacity = Math.max(0, 1 - e / 0.3).toFixed(3);
+    }
+    if (f.card) {
+      // The last stretch of closing: the real mini player fades in under the copy.
+      var real = fpClosing ? Math.max(0, 1 - e / 0.08) : 0;
+      var ro = real > 0 ? real.toFixed(3) : '0';
+      if (f.card.style.opacity !== ro) f.card.style.opacity = ro;
+    }
+  }
+  function animateTo(target, velocity, done) {
+    cancelAnimationFrame(fpAnim);
+    if (reduceMotion) {
+      // iOS "Reduce Motion": no growing card; just open or close.
+      fpAnim = null;
+      setProgress(target);
+      if (done) done();
+      return;
+    }
+    fpV = velocity || 0;
+    var last = performance.now();
+    var k = 520, c = 2 * Math.sqrt(k); // quick, and settles straight into place (no bounce)
+    function step(now) {
+      var dt = Math.min(0.032, (now - last) / 1000);
+      last = now;
+      fpV += (-k * (fpP - target) - c * fpV) * dt;
+      var p = fpP + fpV * dt;
+      if (Math.abs(p - target) < 0.002 && Math.abs(fpV) < 0.03) {
+        setProgress(target);
+        fpAnim = null;
+        if (done) done();
+        return;
+      }
+      setProgress(Math.max(0, Math.min(1, p)));
+      fpAnim = requestAnimationFrame(step);
+    }
+    fpAnim = requestAnimationFrame(step);
+  }
+  // Shows the player (at the current progress) so a drag or animation can move it.
+  function beginPlayerDrag() {
+    if (!playerCard()) return false;
+    buildPlayer();
+    if (!fp) return false;
+    cancelAnimationFrame(fpAnim);
+    if (fpClosing && isPlayerOpen()) setClosing(false); // caught while closing
+    if (!isPlayerOpen()) {
+      closeSheet();
+      fpFrom = miniCard();
+      fpTravel = playerTravel();
+      fp.root.hidden = false;
+      fp.root.classList.add('sr-open');
+      dialogOpened(fp.root, closePlayer);
+      document.documentElement.classList.add('sr-lock');
+      renderPlayer();
+      setProgress(0);
+      clearInterval(fpTimer);
+      fpTimer = setInterval(renderPlayer, 250);
+    }
+    setProgress(fpP);
+    return true;
+  }
+  // Lets go of a drag: open or close depending on where it is and how fast it moves.
+  function settlePlayer(velocity) {
+    // One swipe is enough: a flick, or letting go a quarter of the way, finishes it.
+    var open = velocity > 0.3 || (velocity > -0.3 && fpP > 0.25);
+    setClosing(!open);
+    animateTo(open ? 1 : 0, velocity, open ? null : finishClose);
+  }
+  function openPlayer() {
+    if (isPlayerOpen() && fpP > 0.99) return;
+    if (!beginPlayerDrag()) return;
+    setClosing(false);
+    animateTo(1, 0);
+  }
+  function closePlayer() {
+    if (!isPlayerOpen()) return;
+    if (fp.root.classList.contains('sr-np-songs-open')) {
+      fp.root.classList.remove('sr-np-songs-open');
+      fp.songsBtn.setAttribute('aria-expanded', 'false');
+    }
+    setClosing(true);
+    fpFrom = miniCard();
+    fpTravel = playerTravel();
+    animateTo(0, 0, finishClose);
+  }
+  // The page can't scroll while html has sr-lock (a panel or the full player is open).
+  // If coming back from the background left it on with nothing open, take it off.
+  function healScrollLock() {
+    if (fp && isPlayerOpen() && fpP < 0.02 && fpAnim == null) finishClose();
+    var anyOpen = isOpen() || isPlayerOpen() || welcomeOpen ||
+      panelIsOpen(helpPanel) || panelIsOpen(sleepPanel);
+    if (!anyOpen && document.documentElement.classList.contains('sr-lock')) document.documentElement.classList.remove('sr-lock');
+  }
+  // Closes the player instantly (no animation; the music isn't touched).
+  function closePlayerNow() {
+    if (!fp || !(isPlayerOpen() || !fp.root.hidden)) return;
+    cancelAnimationFrame(fpAnim);
+    fpAnim = null;
+    setProgress(0);
+    finishClose();
+  }
+  // Leaving the app and coming back: a big player that was open stays open. Only one
+  // caught halfway (a swipe interrupted by leaving) is closed, so it never hangs there.
+  function tidyPlayerNow() {
+    if (!fp || !(isPlayerOpen() || !fp.root.hidden)) return;
+    if (fpP >= 0.99 && fpAnim == null) return;
+    closePlayerNow();
+  }
+  document.addEventListener('visibilitychange', function () {
+    tidyPlayerNow();
+    if (document.hidden) return;
+    setTimeout(healScrollLock, 400);
+    var over = document.querySelector('.sr-mini-over');
+    if (over) over.__at = 0; // redo the mini player layout
+    schedule();
+  });
+  setInterval(function () { if (!document.hidden) healScrollLock(); }, 2000);
+
+  // The full player's ... row: Share, Spotify, Apple Music, transparent, under the top row.
+  var npMenu = null; // {box, trigger, outside, key}
+  function openNpActions(f, trigger) {
+    closeNpActions();
+    var inner = fp && fp.root.querySelector('.sr-np-inner');
+    var top = fp && fp.root.querySelector('.sr-np-top');
+    if (!inner || !top) return;
+    var box = el('div', 'sr-np-actions');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', 'Share or find this song');
+    var list = songButtons(f);
+    list.forEach(function (b, i) {
+      var btn = el('button', 'sr-np-act', b[2] + '<span>' + esc(b[0]) + '</span>');
+      btn.type = 'button';
+      if (b[3]) btn.setAttribute('aria-label', b[3]);
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeNpActions();
+        b[1]();
+      });
+      box.appendChild(btn);
+    });
+    inner.appendChild(box);
+    // Centred in the space between the top row and the cover (the band you see there).
+    var ir = inner.getBoundingClientRect();
+    var below = top.getBoundingClientRect().bottom - ir.top;
+    var cover = fp.root.querySelector('.sr-np-cover');
+    var cr = cover && cover.getBoundingClientRect();
+    var gap = cr && cr.height ? cr.top - ir.top - below : 0;
+    var y = below + Math.max(4, (gap - box.offsetHeight) / 2);
+    box.style.top = Math.round(y) + 'px';
+    var m = npMenu = { box: box, trigger: trigger };
+    m.outside = function (e) {
+      if (box.contains(e.target) || (trigger && trigger.contains(e.target))) return;
+      closeNpActions();
+    };
+    m.key = function (e) {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      closeNpActions();
+      if (trigger) try { trigger.focus({ preventScroll: true }); } catch (err) {}
+    };
+    setTimeout(function () { if (npMenu === m) document.addEventListener('click', m.outside, true); }, 0);
+    document.addEventListener('keydown', m.key, true);
+    if (trigger) { trigger.classList.add('sr-on'); trigger.setAttribute('aria-expanded', 'true'); }
+    var first = box.querySelector('button');
+    if (first) setTimeout(function () { if (npMenu === m) focusInside(box, first); }, 60);
+  }
+  function closeNpActions() {
+    var m = npMenu;
+    if (!m) return;
+    npMenu = null;
+    document.removeEventListener('click', m.outside, true);
+    document.removeEventListener('keydown', m.key, true);
+    if (m.trigger) { m.trigger.classList.remove('sr-on'); m.trigger.setAttribute('aria-expanded', 'false'); }
+    m.box.remove();
+  }
+
+  function finishClose() {
+    closeNpActions();
+    if (!fp) return;
+    fpClosing = false;
+    endFly();
+    // Next time the player opens on the cover, not on Up Next.
+    if (fp.root.classList.contains('sr-np-songs-open')) {
+      fp.root.classList.remove('sr-np-songs-open');
+      fp.songsBtn.setAttribute('aria-expanded', 'false');
+    }
+    dialogClosed(fp.root);
+    fp.root.classList.remove('sr-open');
+    fp.root.hidden = true;
+    fpP = 0;
+    document.documentElement.classList.remove('sr-lock');
+    clearInterval(fpTimer);
+    fpTimer = null;
+  }
+
+  function nextSong() {
+    if (playlist) return nextFavorite();
+    var st = npState();
+    if (!st || !st.tracks || st.t == null) return;
+    for (var i = 0; i < st.tracks.length; i++) {
+      if (st.tracks[i].start > st.t + 1) { np().seek(st.tracks[i].start); return; }
+    }
+  }
+  // `always`: go to the song before even when this one is well under way (swiping the
+  // mini player). Otherwise, like Spotify's back button, it first restarts the song.
+  function previousSong(always) {
+    if (playlist) return previousFavorite(always);
+    var st = npState();
+    if (!st || !st.tracks || st.t == null) return;
+    var i = -1;
+    for (var j = 0; j < st.tracks.length; j++) if (st.tracks[j].start <= st.t + 0.25) i = j;
+    // Like Spotify: restart the song unless it just started.
+    if (!always && i >= 0 && st.t - st.tracks[i].start > 3) return np().seek(st.tracks[i].start);
+    np().seek(i > 0 ? st.tracks[i - 1].start : 0);
+  }
+
+  function renderPlayer() {
+    if (!fp || !isPlayerOpen()) return;
+    if (!playerCard()) return closePlayer();
+    var st = npState() || {};
+    var t = currentTrack();
+    var song = t ? t.song : (st.title || '');
+    var artist = t ? t.artist : (st.artist || '');
+    if (playlist && playlist.current) { song = playlist.current.song; artist = playlist.current.artist; }
+    var settled = fpP >= 0.99 && !fpAnim && !reduceMotion;
+    if (fp.title.textContent !== song || fp.artist.textContent !== artist) {
+      // A new song: its name fades in rather than switching at once.
+      var swap = settled && fp.title.textContent ? fp.title.parentNode : null;
+      fp.title.textContent = song;
+      fp.artist.textContent = artist;
+      if (swap) { swap.classList.remove('sr-swap-in'); void swap.offsetWidth; swap.classList.add('sr-swap-in'); }
+    }
+    var curShow = playlist && playlist.current ? playlist.current.show : '';
+    var show = (directShown && activeOurs() && directShown.show) || curShow || miniShowLine() || st.show || '';
+    // A moment without a name (the site redrawing its player) keeps the last one.
+    if (show && fp.show.textContent !== show) fp.show.textContent = show;
+    var cover = bigCover(st.cover || '');
+    if (cover && fp.cover.getAttribute('src') !== cover) {
+      fp.cover.src = cover;
+      fp.cover.onerror = function () { if (st.cover && fp.cover.src !== st.cover) fp.cover.src = st.cover; };
+      fp.bg.style.backgroundImage = 'url("' + cover.replace(/"/g, '%22') + '")';
+    }
+    var hs = songNow();
+    revealHeart(fp.heart, !!hs);
+    if (hs) setHeart(fp.heart, !!byId(hs.id), hs.song);
+    var icon = playKey();
+    if (fp.play.getAttribute('data-icon') !== icon) {
+      fp.play.setAttribute('data-icon', icon);
+      fp.play.innerHTML = icon === 'loading' ? SPIN_LOGO : icon === 'play' ? PLAYBIG : PAUSEBIG;
+      fp.play.setAttribute('aria-label', icon === 'loading' ? 'Starting' : icon === 'play' ? 'Play' : 'Pause');
+      fp.play.classList.toggle('sr-loading', icon === 'loading');
+    }
+    if (fp.root.classList.contains('sr-np-songs-open')) renderSongs();
+    fp.sleep.setAttribute('aria-pressed', sleep ? 'true' : 'false');
+    var dur = st.duration || 0;
+    var pos = scrubbing ? scrubbing.t : (st.t || 0);
+    var frac = dur ? Math.min(1, Math.max(0, pos / dur)) : 0;
+    fp.fill.style.width = (frac * 100) + '%';
+    fp.knob.style.left = (frac * 100) + '%';
+    fp.elapsed.textContent = clock(pos).replace(/^0(\d:)/, '$1');
+    fp.left.textContent = '-' + clock(Math.max(0, dur - pos)).replace(/^0(\d:)/, '$1');
+  }
+
+  // Drag the progress bar to move through the show.
+  function attachScrub() {
+    function at(x) {
+      var r = fp.track.getBoundingClientRect();
+      var st = npState() || {};
+      var frac = Math.min(1, Math.max(0, (x - r.left) / r.width));
+      return frac * (st.duration || 0);
+    }
+    fp.track.parentElement.addEventListener('touchstart', function (e) {
+      e.stopPropagation();
+      scrubbing = { t: at(e.touches[0].clientX) };
+      fp.root.classList.add('sr-np-scrubbing');
+      renderPlayer();
+    }, { passive: true });
+    fp.track.parentElement.addEventListener('touchmove', function (e) {
+      if (!scrubbing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      scrubbing.t = at(e.touches[0].clientX);
+      renderPlayer();
+    }, { passive: false });
+    function end() {
+      if (!scrubbing) return;
+      var target = scrubbing.t;
+      fp.root.classList.remove('sr-np-scrubbing');
+      var n = np();
+      n && n.seek(target);
+      setTimeout(function () { scrubbing = null; }, 600); // let the player catch up
+      renderPlayer();
+    }
+    fp.track.parentElement.addEventListener('touchend', end);
+    fp.track.parentElement.addEventListener('touchcancel', end);
+    fp.track.parentElement.addEventListener('click', function (e) {
+      if ('ontouchstart' in window) return;
+      var n = np();
+      n && n.seek(at(e.clientX));
+    });
+  }
+
+  // Swipe down anywhere (except the progress bar) to close.
+  function attachPlayerDrag() {
+    var y0 = 0, x0 = 0, mode = null, track = null;
+    fp.root.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) return;
+      y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; mode = null;
+      // Inside the Up Next list a swipe only scrolls the list, never the player
+      // (swipe the list's header, or tap its arrow, to close).
+      if (fp.root.classList.contains('sr-np-songs-open') && e.target.closest && e.target.closest('.sr-np-songs-list')) mode = 'other';
+      track = velocityTracker();
+      track.add(y0);
+    }, { passive: true });
+    fp.root.addEventListener('touchmove', function (e) {
+      if (scrubbing) return;
+      var y = e.touches[0].clientY, ddy = y - y0, ddx = e.touches[0].clientX - x0;
+      if (!mode) {
+        if (Math.abs(ddy) < 8 && Math.abs(ddx) < 8) return;
+        mode = ddy > 0 && Math.abs(ddy) > Math.abs(ddx) ? 'drag' : 'other';
+        if (mode === 'drag') beginPlayerDrag();
+      }
+      if (mode !== 'drag') return;
+      e.preventDefault();
+      track.add(y);
+      setProgress(1 - Math.max(0, ddy) / (fpTravel || window.innerHeight));
+    }, { passive: false });
+    fp.root.addEventListener('touchend', function () {
+      if (mode !== 'drag') return;
+      mode = null;
+      settlePlayer(-track.velocity() / (fpTravel || window.innerHeight));
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Favorites playlist
+  // ---------------------------------------------------------------------------
+  var PENDING_KEY = 'sr-favorites-playlist';
+  var lastPlayingAt = 0, wasPlayingBeforeCall = false;
+  var playlist = null;   // {ids, pos, mode, current}
+  var arriving = null;   // {id, since, tries} while switching to a favorite
+  var endTimer = null;   // fires right at the current favorite's end
+
+  function shuffled(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var x = a[i]; a[i] = a[j]; a[j] = x;
+    }
+    return a;
+  }
+
+  // Plays Likes or History in the order the list shows them (newest at the top).
+  function startPlaylist(mode, firstId, source) {
+    source = source === 'history' ? 'history' : 'favorites';
+    var items = sourceList(source);
+    if (!items.length) return;
+    var ids = items.slice()
+      .sort(function (a, b) { return b.favoritedAt - a.favoritedAt; }) // same order as the list, top to bottom
+      .map(function (f) { return f.id; });
+    var pos = 0;
+    if (mode === 'shuffle') {
+      shuffled(ids);
+      if (firstId) { ids.splice(ids.indexOf(firstId), 1); ids.unshift(firstId); }
+    } else if (firstId) {
+      pos = Math.max(0, ids.indexOf(firstId));
+    }
+    playlist = { ids: ids, pos: pos, mode: mode, source: source, current: null };
+    closeSheet();
+    playCurrent();
+  }
+
+  // Leaves Likes, History or Mixtape but keeps the show that's playing right where it
+  // is (used when you pick a song in the big player's Songs list).
+  function leavePlaylistKeepPlaying() {
+    if (!playlist) return;
+    playlist = null;
+    mixAdvancing = false;
+    arriving = null;
+    try { sessionStorage.removeItem(PENDING_KEY); } catch (e) {}
+    var n = np();
+    if (n) { n.setPlaylist(null); n.setOverride(null); }
+    mixNext = null;
+    mixNextItem = null;
+    discardStandby();
+    direct = activeOurs() && directShown ? { number: directShown.number, id: null, heard: true } : null;
+    blendIn();
+    renderTape();
+    schedule();
+  }
+  function endPlaylist(pause, keepPlayer) {
+    if (!playlist) return;
+    playlist = null;
+    mixAdvancing = false;
+    arriving = null;
+    try { sessionStorage.removeItem(PENDING_KEY); } catch (e) {}
+    var n = np();
+    if (n) { n.setPlaylist(null); n.setOverride(null); if (pause) n.pause(); }
+    mixNext = null;
+    mixNextItem = null;
+    direct = null;
+    blendIn();
+    if (!keepPlayer) retireOurs();
+    renderTape();
+    schedule();
+  }
+
+  function playCurrent() {
+    cancelShowSwitch();
+    var f = null;
+    while (playlist && playlist.pos < playlist.ids.length && !(f = lookup(playlist.source, playlist.ids[playlist.pos]))) {
+      playlist.ids.splice(playlist.pos, 1); // removed since the playlist started
+    }
+    if (!f) return endPlaylist(true);
+    // Picking up where you left off: this song, from that second.
+    if (playlist.resumeAt != null) {
+      var at = playlist.resumeAt;
+      playlist.resumeAt = null;
+      if (at > f.start && (f.end == null || at < f.end - 2)) {
+        var copy = {};
+        for (var k0 in f) copy[k0] = f[k0];
+        copy.start = at;
+        f = copy;
+      }
+    }
+    var previous = playlist.current;
+    playlist.current = f;
+    beginStarting();
+    if (playlist.source === 'mixtape') { mixtapeLike(f); renderTape(); }
+    var n = np();
+    if (n) {
+      n.setPlaylist({ next: nextFavorite, previous: previousFavorite });
+      n.setOverride({ title: f.song, artist: f.artist, album: f.show, artwork: f.cover });
+    }
+    schedule();
+    var st = npState();
+    var sameShow = st && st.number && st.number === showNumber(f.show);
+    if (sameShow) {
+      // Same episode: just seek, unless it's the very next song.
+      arriving = { id: f.id, since: Date.now(), tries: 1 };
+      if (!(previous && previous.end != null && Math.abs(previous.end - f.start) < 1 && st.t != null && Math.abs(st.t - f.start) < 3)) {
+        n && n.seek(f.start);
+      }
+      return;
+    }
+    arriving = { id: f.id, since: Date.now(), tries: 0 };
+    // In the background, or while the app's own player is in charge: hand off between
+    // the app's players (no stop). On screen otherwise: the site's player, via the page.
+    if (document.hidden || activeOurs()) return handoff(f);
+    discardStandby();
+    openEpisodeAndPlay(f);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Switching shows while the app is in the background. iOS stops drawing the page
+  // then, so opening the next show's page never finishes. Instead, load the show's
+  // audio straight into the site's SoundCloud player and jump to the song. The page
+  // catches up when the app comes back.
+  // ---------------------------------------------------------------------------
+  var episodeAudio = {}; // episode path -> SoundCloud link
+  var direct = null;     // {number, id} while the player plays a show the page doesn't show
+  function soundcloudLink(doc) {
+    var a = doc.querySelector('a[href*="soundcloud.com/"]');
+    return a ? a.getAttribute('href') : null;
+  }
+  function soundcloudFrame() {
+    return document.querySelector('iframe[src*="w.soundcloud.com"]:not(.sr-player-frame)');
+  }
+  function switchFailed(f) {
+    if (!playlist || playlist.current !== f) return;
+    showToast("Couldn't switch to the next song. Tap Next to try another.");
+    endPlaylist(false);
+  }
+
+  // Everything the app needs about a show, from its page: the SoundCloud link, the
+  // tracklist (for song names, hearts and history) and the cover.
+  var episodeInfos = {};
+  function episodeInfo(path) {
+    if (episodeInfos[path]) return Promise.resolve(episodeInfos[path]);
+    return fetch(path, { credentials: 'same-origin' }).then(function (r) { return r.text(); }).then(function (html) {
+      var doc = new DOMParser().parseFromString(html, 'text/html');
+      var link = soundcloudLink(doc);
+      if (link) episodeAudio[path] = link;
+      var h1 = doc.querySelector('#episode-card-header h1, main h1');
+      var img = doc.querySelector('#episode-card-header img');
+      var info = {
+        link: link,
+        number: showNumber(text(h1)),
+        cover: img ? (img.getAttribute('src') ? new URL(img.getAttribute('src'), location.href).href : '') : '',
+        tracks: pageRows(doc).map(function (r) {
+          return { start: r.start, artist: r.vo ? (r.artist || r.song) : r.artist, title: r.vo ? '' : r.song };
+        })
+      };
+      if (link) episodeInfos[path] = info;
+      return info;
+    });
+  }
+  function directInfo(f, info) {
+    return { number: showNumber(f.show) || info.number, show: f.show, cover: f.cover || info.cover, episodeURL: f.episodeURL, tracks: info.tracks };
+  }
+  function playerURL(link, start, isStandby) {
+    return 'https://w.soundcloud.com/player/?url=' + encodeURIComponent(link) +
+      // A player loaded ahead must not play early: on iPhone, starting a second
+      // player pauses the one you're listening to.
+      '&auto_play=' + (isStandby ? 'false' : 'true') + '&visual=false&show_comments=false&sr_start=' + Math.max(0, start) +
+      (isStandby ? '&sr_standby=1' : '') + '&sr_id=' + Date.now();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Two players, handing off like a relay. A few seconds before a song ends, the
+  // next song's show is loaded into a hidden player of the app's own, muted and
+  // waiting at the song's start. At the end it starts, and only once it's really
+  // playing is it unmuted while the old player pauses. The sound never stops, so iOS
+  // keeps the app running with the screen off and the lock screen just moves on.
+  // ---------------------------------------------------------------------------
+  var standby = null;  // {f, frame, win, ready, info}
+  var ours = [];       // the app's own player frames (the site's stays as it is)
+  var handing = null;  // {f, win, timer} while a handoff is in progress
+  var pageFallbackFor = null; // the song a stuck switch already handed to the show's page
+  var directShown = null; // what the mini player shows while the app's player plays
+
+  function makeFrame(src) {
+    var frame = document.createElement('iframe');
+    frame.className = 'sr-player-frame';
+    frame.setAttribute('allow', 'autoplay; encrypted-media');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.setAttribute('tabindex', '-1');
+    frame.src = src;
+    document.body.appendChild(frame);
+    ours.push(frame);
+    var n = np();
+    if (n && n.setOurs && frame.contentWindow) n.setOurs(frame.contentWindow, true);
+    return frame;
+  }
+  function removeFrame(frame) {
+    ours = ours.filter(function (x) { return x !== frame; });
+    var n = np();
+    if (n && n.setStandby && frame.contentWindow) n.setStandby(frame.contentWindow, false);
+    if (n && n.setOurs && frame.contentWindow) n.setOurs(frame.contentWindow, false);
+    try { frame.remove(); } catch (e) {}
+  }
+  function activeOurs() {
+    var n = np();
+    var win = n && n.activeFrame ? n.activeFrame() : null;
+    for (var i = 0; i < ours.length; i++) if (ours[i].contentWindow === win) return ours[i];
+    return null;
+  }
+  function discardStandby() {
+    if (!standby) return;
+    if (handing && handing.win && standby.win === handing.win) return;
+    var frame = standby.frame;
+    standby = null;
+    if (frame && frame !== activeOurs()) removeFrame(frame);
+  }
+  // Hands playback back to the site's own player and clears the app's players.
+  function retireOurs(pause) {
+    discardStandby();
+    var n = np();
+    var mine = activeOurs();
+    if (n && n.setActiveFrame) n.setActiveFrame(null);
+    if (n && n.setDirect) n.setDirect(null);
+    directShown = null;
+    if (mine && n && n.toFrame) n.toFrame(mine.contentWindow, { pause: true });
+    ours.slice().forEach(removeFrame);
+    if (handing) { clearTimeout(handing.timer); clearInterval(handing.poke); handing = null; }
+    renderMiniPlayer(miniPlayer());
+  }
+
+  // What plays after the current song, if it's in another show (else nothing to load).
+  function upcoming() {
+    if (!playlist || !playlist.current) return null;
+    if (sleep && sleep.type !== 'time') return null;
+    var g = null;
+    if (playlist.source === 'mixtape' && playlist.pos >= playlist.ids.length - 1) g = mixNextItem;
+    else if (playlist.pos + 1 < playlist.ids.length) g = lookup(playlist.source, playlist.ids[playlist.pos + 1]);
+    if (!g) return null;
+    var st = npState();
+    var playingNow = st && st.number;
+    return showNumber(g.show) === playingNow ? null : g;
+  }
+
+  function prepareStandby(g) {
+    if (!g || (standby && standby.f.id === g.id)) return;
+    discardStandby();
+    var mine = { f: g, frame: null, win: null, loaded: false, createdAt: Date.now(), info: null };
+    standby = mine;
+    episodeInfo(g.episodeURL).then(function (info) {
+      if (standby !== mine) return;
+      if (!info.link) { standby = null; return; }
+      mine.info = info;
+      mine.frame = makeFrame(playerURL(info.link, g.start, true));
+      mine.win = mine.frame.contentWindow;
+      mine.createdAt = Date.now();
+      mine.frame.addEventListener('load', function () { mine.loaded = true; });
+      var n = np();
+      if (n && n.setStandby) n.setStandby(mine.win, true);
+      // Download the cover now and hand the player its song info, so at the switch
+      // the lock screen doesn't wait for the image.
+      var cover = g.cover || info.cover;
+      if (cover) { var pre = new Image(); pre.src = cover; mine.coverImage = pre; }
+      var meta = { title: g.song, artist: g.artist, album: g.show, artwork: cover };
+      var send = function () { if (standby === mine && n && n.preview) n.preview(mine.frame.contentWindow, meta); };
+      mine.frame.addEventListener('load', function () { send(); setTimeout(send, 1000); });
+    }).catch(function () { if (standby === mine) standby = null; });
+  }
+
+  // Before the end: the player loaded ahead must really have loaded; if it's stuck,
+  // load it again while the current song still plays.
+  function ensureStandbyLoaded() {
+    if (!standby || standby.loaded || handing) return;
+    if (Date.now() - standby.createdAt < 8000 || (standby.reloads || 0) >= 2) return;
+    var g = standby.f, reloads = (standby.reloads || 0) + 1;
+    discardStandby();
+    prepareStandby(g);
+    if (standby) standby.reloads = reloads;
+  }
+
+  window.addEventListener('soulection-frametime', function (e) {
+    var d = e.detail || {};
+    if (d.paused === false && !d.muted) lastPlayingAt = Date.now();
+    if (handing && handing.win && d.win === handing.win && d.paused === false) {
+      // Unmute once it's at the song; give it a moment to get there, but not longer.
+      var near = d.t != null && Math.abs(d.t - handing.f.start) < 3;
+      if (!handing.playingSince) handing.playingSince = Date.now();
+      if (near || Date.now() - handing.playingSince > 1500) finishHandoff();
+    }
+  });
+
+  // Switches to a song in another show inside the app's own players. The new one is
+  // started at its song; the old one keeps playing until then, so there's never a silent
+  // moment (which makes iOS freeze the app with the screen off).
+  function handoff(f) {
+    var n = np();
+    if (!n || !n.toFrame) return switchFailed(f);
+    if (handing) { clearTimeout(handing.timer); clearInterval(handing.poke); }
+    var oldFrame = activeOurs();
+    var site = soundcloudFrame();
+    var oldWin = oldFrame ? oldFrame.contentWindow : (site ? site.contentWindow : null);
+    // The old player keeps playing until the new one starts (iOS stops it the moment the
+    // new one plays): a muted or silent moment makes iOS drop the Dynamic Island and
+    // freeze the app in the background.
+    if (!standby || standby.f.id !== f.id) { discardStandby(); prepareStandby(f); }
+    var h = handing = { f: f, oldWin: oldWin, oldFrame: oldFrame, win: null, frame: null, info: null, started: Date.now(), reloads: 0, kickedSince: 0, timer: null, poke: null };
+    arriving = { id: f.id, since: Date.now(), tries: 1 };
+    // Loads the new show's player again from scratch (twice at most).
+    function reload() {
+      h.reloads++;
+      h.win = null; h.frame = null; h.kickedSince = 0;
+      discardStandby();
+      prepareStandby(f);
+    }
+    // With the app open, a switch that hasn't happened after 4 seconds goes through the
+    // show's page instead (like pressing Next), rather than leaving the old show playing.
+    var canUsePage = pageFallbackFor !== f.id;
+    function usePage() {
+      clearTimeout(h.timer);
+      clearInterval(h.poke);
+      handing = null;
+      h.win = null;
+      discardStandby();
+      pageFallbackFor = f.id; // if the page can't do it either, don't come back here again
+      if (playlist && playlist.current === f) openEpisodeAndPlay(f);
+    }
+    function kick() {
+      if (handing !== h) return;
+      if (canUsePage && !document.hidden && Date.now() - h.started > 4000) return usePage();
+      var sb = standby;
+      if (!sb || sb.f.id !== f.id) { prepareStandby(f); return; }
+      if (!sb.win || !sb.loaded) {
+        // Not loaded yet: give it 5 seconds, then load it again.
+        if (Date.now() - sb.createdAt > 5000 && h.reloads < 2) reload();
+        return;
+      }
+      // Loaded and told to play, but still not playing after 3 seconds: load it again.
+      // (Not sooner: a player that's still buffering would be thrown away and have to
+      // start over, which makes a slow connection slower.)
+      if (!h.kickedSince) h.kickedSince = Date.now();
+      else if (Date.now() - h.kickedSince > 3000 && h.reloads < 2) { reload(); return; }
+      h.win = sb.win; h.frame = sb.frame; h.info = sb.info;
+      // Start it (still muted) at the song: through SoundCloud's own player API, and
+      // directly in case the audio is already set up. Repeated until it plays.
+      try {
+        sb.win.postMessage(JSON.stringify({ method: 'seekTo', value: Math.max(0, f.start) * 1000 }), '*');
+        sb.win.postMessage(JSON.stringify({ method: 'play' }), '*');
+      } catch (e) {}
+      n.toFrame(sb.win, { seek: f.start, play: true });
+    }
+    kick();
+    h.poke = setInterval(kick, 1000);
+    h.timer = setTimeout(function () {
+      if (handing !== h) return;
+      clearInterval(h.poke);
+      handing = null;
+      discardStandby();
+      if (h.oldWin) n.toFrame(h.oldWin, { pause: true, unmute: true });
+      if (!playlist || playlist.current !== f) return;
+      if (document.hidden) showToast("Couldn't continue with the screen off. Open the app to keep going.");
+      else openEpisodeAndPlay(f);
+    }, 30000);
+  }
+  // How long switches to another show take on this phone (seconds, at most 4): a
+  // running average of the last few, kept between launches.
+  var SWITCH_KEY = 'sr-switch-ms';
+  function switchLead() {
+    var ms = 0;
+    try { ms = parseFloat(localStorage.getItem(SWITCH_KEY)) || 0; } catch (e) {}
+    return Math.min(4, Math.max(0, ms / 1000));
+  }
+  function noteSwitchTime(ms) {
+    if (!(ms > 0)) return;
+    ms = Math.min(8000, ms);
+    var old = 0;
+    try { old = parseFloat(localStorage.getItem(SWITCH_KEY)) || 0; } catch (e) {}
+    try { localStorage.setItem(SWITCH_KEY, String(Math.round(old ? old * 0.6 + ms * 0.4 : ms))); } catch (e) {}
+  }
+  function finishHandoff() {
+    var h = handing;
+    handing = null;
+    noteSwitchTime(Date.now() - h.started);
+    clearTimeout(h.timer);
+    clearInterval(h.poke);
+    if (standby && standby.win === h.win) standby = null; // it's in charge now
+    var n = np();
+    // Swap in the same instant: the new player is heard, the old one pauses (and is
+    // unmuted again for later).
+    n.toFrame(h.win, { unmute: true });
+    if (h.oldWin) n.toFrame(h.oldWin, { pause: true, unmute: true });
+    n.setStandby(h.win, false);
+    n.setActiveFrame(h.win);
+    directShown = directInfo(h.f, h.info);
+    n.setDirect(directShown);
+    direct = { number: directShown.number, id: h.f.id, heard: true };
+    if (h.oldFrame) setTimeout(function () { removeFrame(h.oldFrame); }, 3000);
+    justSwitched = { oldWin: h.oldWin, win: h.win, at: Date.now() };
+    renderMiniPlayer(miniPlayer());
+    blendIn();
+  }
+  function switchInPlayer(f) { return handoff(f); }
+  // The last switch: for a few seconds after it, the old player starting up again
+  // (the site's own player can) is a leftover, not something to follow.
+  var justSwitched = null;
+
+  // A player is playing out loud but isn't the one the app shows (a switch that didn't
+  // go cleanly). Follow that one: show its show and song, and pause any other player.
+  window.addEventListener('soulection-stray', function (e) {
+    if (handing) return;
+    var win = e.detail && e.detail.win;
+    var n = np();
+    if (!win || !n || !n.setActiveFrame) return;
+    // The old player came back right after a switch: pause it again and keep the new one.
+    if (justSwitched && win === justSwitched.oldWin && Date.now() - justSwitched.at < 8000) {
+      n.toFrame(win, { pause: true, unmute: true });
+      if (justSwitched.win) n.toFrame(justSwitched.win, { play: true, unmute: true });
+      return;
+    }
+    // While Mixtape, Likes or History plays, a different player starting is a mistake
+    // (a play command that went to the wrong player): pause it and carry on with the
+    // right one instead of following it.
+    if (playlist && playlist.current) {
+      n.toFrame(win, { pause: true, unmute: true });
+      setTimeout(function () { var m = np(); if (m) m.play(); }, 150);
+      return;
+    }
+    var mine = null;
+    for (var i = 0; i < ours.length; i++) if (ours[i].contentWindow === win) mine = ours[i];
+    var site = soundcloudFrame();
+    // Quiet every other player.
+    ours.forEach(function (fr) { if (fr !== mine && fr.contentWindow) n.toFrame(fr.contentWindow, { pause: true, unmute: true }); });
+    if (site && site.contentWindow !== win) n.toFrame(site.contentWindow, { pause: true, unmute: true });
+    if (!mine) {
+      // The site's own player: back to normal following.
+      ours.slice().forEach(removeFrame);
+      standby = null;
+      n.setActiveFrame(null);
+      n.setDirect(null);
+      directShown = null;
+      direct = null;
+      renderMiniPlayer(miniPlayer());
+      return;
+    }
+    if (standby && standby.win === win) standby = null;
+    n.setStandby(win, false);
+    n.setActiveFrame(win);
+    // Which show it plays: from its SoundCloud link.
+    var link = '';
+    try { link = new URL(mine.src).searchParams.get('url') || ''; } catch (err) {}
+    var path = null;
+    Object.keys(episodeAudio).forEach(function (p) { if (episodeAudio[p] === link) path = p; });
+    var info = path && episodeInfos[path];
+    var cur = playlist && playlist.current;
+    if (info) {
+      var f = cur && cur.episodeURL === path ? cur : { show: 'Show #' + info.number, cover: info.cover, episodeURL: path };
+      directShown = directInfo(f, info);
+      n.setDirect(directShown);
+      direct = { number: directShown.number, id: cur && cur.episodeURL === path ? cur.id : null, heard: true };
+      // The playlist was on another song: let go of it rather than show the wrong one.
+      if (cur && cur.episodeURL !== path) dropPlaylist();
+    }
+    renderMiniPlayer(miniPlayer());
+  });
+  // Ends playlist mode without touching what's playing.
+  function dropPlaylist() {
+    if (!playlist) return;
+    playlist = null;
+    arriving = null;
+    mixNext = null;
+    mixNextItem = null;
+    try { sessionStorage.removeItem(PENDING_KEY); } catch (e) {}
+    var n = np();
+    if (n) { n.setPlaylist(null); n.setOverride(null); }
+    renderTape();
+    schedule();
+  }
+
+  // Back in the app after a background switch: show the playing show's page and let
+  // the site take over from the same spot.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden || !direct || !playlist || !playlist.current) return;
+    var f = playlist.current;
+    // The app's own player is playing: leave the music alone (handing it back to the
+    // site's player would pause it for a second) and leave the page where it was.
+    if (activeOurs()) return;
+    var st = npState();
+    // Only trust the playing time once the new show has been heard, and only if it's
+    // inside this song; otherwise it's left over from the previous show.
+    var at = direct.heard && st && st.t != null && st.t >= f.start - 1 && (f.end == null || st.t < f.end) ? st.t : f.start;
+    direct = null;
+    arriving = { id: f.id, since: Date.now(), tries: 0, at: at };
+    openEpisodeAndPlay(f, at);
+  });
+
+  // Opens the favorite's episode page and taps its tracklist row, which is how the
+  // site itself starts an episode at a song.
+  function openEpisodeAndPlay(f, resumeAt) {
+    if (location.pathname.replace(/\/$/, '') !== f.episodeURL) {
+      if (window.next && window.next.router && window.next.router.push) {
+        window.next.router.push(f.episodeURL);
+      } else {
+        try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(playlist)); } catch (e) {}
+        location.assign(f.episodeURL);
+        return;
+      }
+    }
+    // Give the page up to 4 seconds, then switch in the app's own player instead (the
+    // app shows its own mini player for it when the site has none).
+    var deadline = Date.now() + 4000;
+    var wantNumber = showNumber(f.show);
+    (function tryClick() {
+      if (!playlist || playlist.current !== f) return;
+      // A normal switch is abandoned once something else took over; catching the
+      // page up (resumeAt) carries on even after the music has settled.
+      if (resumeAt == null && (!arriving || arriving.id !== f.id)) return;
+      // The page isn't being drawn (app in the background): switch in the player.
+      if (document.hidden && resumeAt == null) return switchInPlayer(f);
+      var onPage = location.pathname.replace(/\/$/, '') === f.episodeURL &&
+        (!wantNumber || showNumber(episodeHeading()) === wantNumber);
+      if (onPage) {
+        var rows = pageRows();
+        var best = null;
+        rows.forEach(function (r) { if (r.start <= f.start + 1 && (!best || r.start > best.start)) best = r; });
+        if (best) {
+          var btn = best.row.querySelector(':scope > button');
+          if (btn) {
+            if (!arriving || arriving.id !== f.id) arriving = { id: f.id, since: Date.now(), tries: 0, at: resumeAt };
+            arriving.tries++;
+            arriving.since = Date.now();
+            if (ours.length) retireOurs(); // the site's player takes over again
+            btn.click();
+            var target = resumeAt != null ? resumeAt : f.start;
+            if (Math.abs(best.start - target) > 1) setTimeout(function () { var n = np(); n && n.seek(target); }, 1500);
+            return;
+          }
+        }
+      }
+      if (Date.now() < deadline) setTimeout(tryClick, 250);
+      else if (resumeAt == null) switchInPlayer(f); // page never got ready
+      else {
+        // Couldn't catch the page up after a background switch. The music is
+        // already right, so leave it playing and keep following it.
+        direct = { number: wantNumber, id: f.id, heard: true };
+        arriving = null;
+      }
+    })();
+  }
+
+  function nextFavorite() {
+    if (!playlist) return;
+    // Sleep timer set to "End of song" / "End of show": stop instead of moving on.
+    if (sleep && sleep.type !== 'time') return sleepNow();
+    if (playlist.source === 'mixtape' && playlist.pos >= playlist.ids.length - 1) return mixtapeAdvance();
+    playlist.pos++;
+    if (playlist.pos >= playlist.ids.length) return endPlaylist(true);
+    playCurrent();
+  }
+
+  function previousFavorite(always) {
+    if (!playlist || !playlist.current) return;
+    var st = npState();
+    var f = playlist.current;
+    var n = np();
+    // Like the lock screen elsewhere: restart the song unless it just started.
+    if ((!always && st && st.t != null && st.t - f.start > 3) || playlist.pos === 0) {
+      n && n.seek(f.start);
+      return;
+    }
+    playlist.pos--;
+    playCurrent();
+  }
+
+  // Blend: with the app open, a switch to another show dips the volume over the old
+  // song's last seconds and brings it back once the new song plays (done natively;
+  // with the app in the background iOS would show its volume bar, so no blend then).
+  var blending = false;
+  function blendIn() {
+    if (!blending) return;
+    blending = false;
+    native({ op: 'blendIn' });
+  }
+  document.addEventListener('visibilitychange', function () { if (document.hidden) blending = false; });
+
+  // Follows playback: confirms the switch to a favorite, moves on at its end, and
+  // ends playlist mode when a different show starts playing.
+  function followPlayback(st) {
+    if (!playlist || !playlist.current) return;
+    var f = playlist.current;
+    var number = showNumber(f.show);
+    // After a background switch the site's mini player still shows the old show,
+    // but the player is playing this one.
+    var playingNumber = direct && direct.id === f.id ? direct.number : (st && st.number);
+    if (handing && handing.f === f) return; // the handoff decides
+    if (arriving) {
+      var at = arriving.at != null ? arriving.at : f.start;
+      if (st && playingNumber === number && st.t != null && st.t >= at - 2 && st.t <= at + 20 && st.paused !== true) {
+        arriving = null;
+        if (direct && direct.id === f.id) direct.heard = true;
+        if (pageFallbackFor === f.id) pageFallbackFor = null; // it arrived; next time is a fresh try
+        blendIn();
+      } else if (Date.now() - arriving.since > 7000) {
+        if (st && playingNumber === number && arriving.tries < 3) {
+          arriving.tries++;
+          arriving.since = Date.now();
+          var n = np();
+          n && n.seek(at);
+        } else if (arriving.tries >= 3 || Date.now() - arriving.since > 20000) {
+          switchFailed(f);
+        }
+      }
+      return;
+    }
+    if (!st || st.t == null) return;
+    // Times from before a background switch was heard belong to the old show.
+    if (direct && direct.id === f.id && !direct.heard) return;
+    if (playingNumber !== number) return endPlaylist(false);
+    var end = f.end != null ? f.end : (st.duration || Infinity);
+    var nextShow = upcoming();
+    // With the screen off, a switch to another show starts a little before the end, by
+    // about as long as switches have been taking on this phone (so the next song comes
+    // in on time instead of the old show playing on).
+    var left = end - st.t - (nextShow && document.hidden ? switchLead() : 0);
+    if (left < 3.2 && left > 0.4 && !st.paused && !blending && !document.hidden && nextShow) {
+      blending = true;
+      native({ op: 'blendOut', seconds: Math.max(0.5, left - 0.4) });
+    }
+    if (left <= 0.4) return nextFavorite();
+    // The next show is loaded well ahead, so a slow connection has time to get it ready.
+    if (left < 90 && !st.paused) { prepareStandby(nextShow); ensureStandbyLoaded(); }
+    // Playback updates arrive about once a second; check again right at the end.
+    if (left < 2.5 && !endTimer && !st.paused) {
+      endTimer = setTimeout(function () {
+        endTimer = null;
+        followPlayback(npState());
+      }, (left - 0.3) * 1000);
+    }
+  }
+
+  // Starting a normal episode (tapping a tracklist row yourself) ends playlist mode.
+  document.addEventListener('click', function (e) {
+    if (!e.isTrusted || !playlist) return;
+    var t = e.target;
+    if (t && t.closest && t.closest('.col-span-full.grid > button')) return endPlaylist(false);
+    // The show's own Play button also starts the site's player.
+    var b = t && t.closest && t.closest('main button');
+    if (b && activeOurs() && !/\bsr-/.test(b.className || '') && /^\s*play\b/i.test((b.getAttribute('aria-label') || b.textContent || ''))) endPlaylist(false);
+  }, true);
+
+  window.addEventListener('soulection-nowplaying', function (e) {
+    if (e.detail && e.detail.paused === false) { lastPlayingAt = Date.now(); if (starting) endStarting(); }
+    if (readyCard && e.detail && e.detail.paused === false) hideReadyCard();
+    renderLiveCard();
+    followPlayback(e.detail);
+    followListening(e.detail);
+    followSleep(e.detail);
+    renderPlayer();
+    schedule();
+  });
+
+  // ---------------------------------------------------------------------------
+  // The site is server-rendered and then hydrated by React. Changing its markup
+  // before hydration (adding hearts to the tracklist) makes React throw the page
+  // away and re-render it, so wait until React has claimed the page. React marks the
+  // nodes it owns with a "__reactFiber$..." property.
+  var hydrated = false;
+  var startedAt = Date.now();
+  function isHydrated() {
+    if (hydrated) return true;
+    var probe = document.querySelector('main') || (document.body && document.body.firstElementChild);
+    var keys = probe ? Object.keys(probe) : [];
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('__reactFiber$') === 0) return (hydrated = true);
+    }
+    // Not a React page (anymore)? Don't wait forever.
+    if (document.readyState === 'complete' && Date.now() - startedAt > 4000) return (hydrated = true);
+    return false;
+  }
+
+  function ensureStyle() {
+    if (document.getElementById('sr-fav-style')) return;
+    var style = el('style');
+    style.id = 'sr-fav-style';
+    style.textContent = CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function render() {
+    renderPending = false;
+    if (!document.body) return;
+    if (!isHydrated()) {
+      setTimeout(schedule, 200);
+      return;
+    }
+    ensureStyle();
+    renderRowHearts();
+    renderPlayingRow();
+    renderNewBadges();
+    renderTrending();
+    scheduleCoverCheck();
+    renderMiniPlayer(miniPlayer());
+    renderLiveCard();
+    announceSong();
+    renderTab();
+    if (isOpen()) renderSheet();
+  }
+
+  function schedule() {
+    if (renderPending) return;
+    renderPending = true;
+    // 60 ms: quick, but after iPhone's check for "did this tap change the page?" (an
+    // update inside that check made iPhone hold back taps on timestamps).
+    setTimeout(render, 60);
+  }
+
+  function start() {
+    attachOpenGesture();
+    new MutationObserver(function (mutations) {
+      // The site swapped its top bar: move the buttons right away, before the screen
+      // draws, so they never blink out or jump.
+      if (appBar && (!appBar.left.isConnected || (appBar.left.parentElement === appBar.root && searchBox()))) fitAppBar();
+      for (var i = 0; i < mutations.length; i++) {
+        var target = mutations[i].target;
+        // Ignore our own elements so updating a heart doesn't trigger another pass.
+        if (target.closest && target.closest('.sr-heart, .sr-fav-root, .sr-grab, .sr-note, .sr-bars, .sr-mini-over, .sr-new, .sr-ready, .sr-appbar, .sr-appbar-side')) continue;
+        return schedule();
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    // Safety net: if the site redraws its top bar and the app's icons go missing,
+    // put them back within a second or two.
+    setInterval(function () { if (tab && !tab.isConnected) schedule(); }, 1500);
+    try {
+      var pending = JSON.parse(sessionStorage.getItem(PENDING_KEY) || 'null');
+      sessionStorage.removeItem(PENDING_KEY);
+      if (pending && pending.ids) {
+        pending.current = null;
+        resumeAfterLoad = pending;
+      }
+    } catch (e) {}
+    try {
+      var reveal = JSON.parse(sessionStorage.getItem(REVEAL_KEY) || 'null');
+      sessionStorage.removeItem(REVEAL_KEY);
+      if (reveal && reveal.url) revealSong(reveal.url, reveal.start, showNumber(reveal.show), null);
+    } catch (e) {}
+    setTimeout(function () { showHelloCard(); }, 1200); // the welcome mini player
+    native({ op: 'get' });
+    schedule();
+  }
+
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start);
+})();

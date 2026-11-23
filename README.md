@@ -1,46 +1,55 @@
-# android-app-template
+# Soulection Radio for Android (Unofficial)
 
-Android version of my-ios-app-template. No Android Studio needed: push to `main`, GitHub Actions builds a signed APK and attaches it to a release.
+An unofficial Android app for [Soulection Radio](https://radio.soulection.com/). It's the same site you'd open in Chrome, as a real app: it keeps playing with the screen off and adds likes, listening history, playlists, a sleep timer, a random show button and an endless Mixtape.
 
-## New app
+The Android version of [soulection-app](https://github.com/hotwheelz3000/soulection-app) (iPhone).
 
-1. **Use this template** on GitHub to make a new repo.
-2. Edit the settings block at the top of `app/build.gradle.kts`:
-   - `appName` - name under the icon
-   - `appId` - unique ID, e.g. `com.hotwheelz3000.soulection`
-   - `startUrl` - site the app opens
-   - `appVersion` - bump for a new version
-3. Put page tweaks in `app/src/main/assets/inject.js` (runs on every page, like the iOS injected JS).
-4. Push. The direct APK link shows in the Actions run summary.
-5. In this README, replace `REPO` in the Obtainium link below with the new repo's name.
+> **Unofficial fan project.** Not affiliated with, endorsed by or connected to Soulection. The app shows the official site; all shows, music, names and artwork belong to Soulection and the artists. No ads, accounts or tracking.
 
-## Builds
+## Download
 
-- `main`: syntax-checks `inject.js`, builds, lints, publishes a release
-- Any other branch or PR: same checks and build, no release. The APK is in the run's **test-apk** artifact.
+**[Download Soulection Radio](https://github.com/hotwheelz3000/soulection-android/releases/latest)**: open the link on your phone, then tap the `.apk` file under **Assets** (named with the version and build, e.g. `SoulectionRadio-1.0-12.apk`; the first build of a version has no build number).
+
+## How to install
+
+1. **Download the `.apk`** from the link above.
+2. **Open it.** If Android asks, allow installs from your browser (or Files app), then tap **Install**.
+3. Android 8 or later.
+
+New builds install over the old one and keep your likes and history.
+
+**Updates:** the app tells you when a new build is out. Or, with [Obtainium](https://github.com/ImranR98/Obtainium) installed, open this link on the phone:
+
+```
+obtainium://add/https://github.com/hotwheelz3000/soulection-android
+```
 
 ## What it does
 
-- Full-screen WebView with JS, local storage and file uploads
-- Links to other sites open in the browser
-- Back button goes back a page
-- Pull down to refresh
-- `window.Android.postMessage("text")` from JS shows a toast
+**Listening**
+- **Plays with the screen off**, with the song, artist and cover in the notification and on the lock screen. Previous / next jump between songs in the show; headphone and Bluetooth buttons work too.
+- **Pauses for phone calls** and carries on after. Unplugging headphones pauses it.
+- **Big player, Up Next, swipe the mini player to skip, picks up where you left off**: the same as on iPhone.
+- **Speaker button** in the big player opens Android's output picker.
 
-## APK names
+**Likes and History**
+- **Heart any song** in a tracklist or either player. Search, swipe to remove, share, or open on Spotify or Apple Music.
+- **Play them as a playlist:** in order or shuffled, across shows, with the screen off.
+- **Continue listening:** the shows you were in the middle of.
 
-- First build of a version: `MyApp-1.0.apk`
-- Later builds: `MyApp-1.0-12.apk` (12 = build number)
+**Extras**
+- **Random show** (dice), **Mixtape** (endless random songs), **sleep timer** that fades the music out.
+- **New show notifications:** the app checks about every 15 minutes, even when closed.
+- **Top bar** with Back, Forward, Home, Likes, dice, Mixtape, sleep timer and Help on every page. The phone's back button goes back a page.
 
-## Installing
+**Backup**
+- **On this phone, always:** `Downloads/Soulection/Soulection Radio Backup.json`, updated after every change.
+- **Google Drive (turn it on once):** in Likes, tap **Turn on** → **Save a backup file**, pick a folder in Drive and tap **Save**. That file is kept up to date and survives deleting the app or switching phones.
+- **After a reinstall,** tap **Pick my backup file** when the app asks.
+- **Works across phones:** an iPhone app backup restores here, and the other way round.
 
-Open the APK link on the phone and allow installs from your browser. Every build uses the same key (`keystore/sideload.jks`), so new versions install over old ones and keep your data. This key is for sideloading only, not the Play Store.
+## How it's built
 
-## Updates
-
-- **In the app:** on launch it checks the latest release's `update.json` and offers to download a newer build.
-- **Obtainium:** with [Obtainium](https://github.com/ImranR98/Obtainium) installed, open this link on the phone:
-
-```
-obtainium://add/https://github.com/hotwheelz3000/REPO
-```
+- Kotlin, built by GitHub Actions (no Android Studio). Push to `main` and the APK is attached to a release.
+- The page tweaks are the iPhone app's injected JavaScript, in `app/src/main/assets/`: `nowplaying.js` and `favorites.js` (from the iPhone app, Android wording), plus `media-shim.js`, which passes "now playing" and the lock screen buttons between the page's player and Android.
+- Native parts: `PlaybackService` (screen-off playback, notification, media session), `MediaHub` (talks to the page's players, phone calls), `FavoritesBridge` / `FavoritesStore` (likes, history, backups, sleep timer), `NewShows` (new-show checks).
