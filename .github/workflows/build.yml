@@ -1,0 +1,90 @@
+name: Build APK
+
+# main: test, build, release
+# other branches and PRs: test and build only (no release)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check injected JS
+        run: node --check app/src/main/assets/inject.js
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Read app settings
+        id: app
+        run: |
+          NAME=$(grep -oP 'val appName = "\K[^"]+' app/build.gradle.kts | tr -d ' ')
+          VERSION=$(grep -oP 'val appVersion = "\K[^"]+' app/build.gradle.kts)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: ./gradlew assembleRelease lintRelease --stacktrace
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-release.html
+          if-no-files-found: ignore
+
+      - name: Upload test APK (branches only)
+        if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v6
+        with:
+          name: test-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Name the APK
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.app.outputs.name }}
+          VERSION: ${{ steps.app.outputs.version }}
+          BUILD: ${{ github.run_number }}
+        run: |
+          # First build of a new version: App-1.0.apk, tag v1.0
+          # Later builds:                 App-1.0-12.apk, tag v1.0-12
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            FILE="$NAME-$VERSION-$BUILD.apk"; TAG="v$VERSION-$BUILD"
+          else
+            FILE="$NAME-$VERSION.apk"; TAG="v$VERSION"
+          fi
+          cp app/build/outputs/apk/release/app-release.apk "$FILE"
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$FILE"
+          # update.json is what the app checks on launch
+          printf '{"versionCode":%s,"versionName":"%s","url":"%s"}\n' "$BUILD" "$VERSION" "$URL" > update.json
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Release
+        if: steps.apk.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.apk.outputs.tag }}" "${{ steps.apk.outputs.file }}" update.json \
+            --title "${{ steps.apk.outputs.tag }}" --notes "Build ${{ github.run_number }}" --latest
+          echo "### Download" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.apk.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
