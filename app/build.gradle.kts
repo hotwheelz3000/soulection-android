@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // ============================================================
@@ -23,12 +22,12 @@ val updateUrl = if (repo.isNotEmpty())
 
 android {
     namespace = "com.hotwheelz3000.soulection"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = appId
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = buildNumber
         versionName = appVersion
 
@@ -67,10 +66,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -78,9 +73,9 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("androidx.webkit:webkit:1.12.1")
-    implementation("androidx.media:media:1.7.0")
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.activity:activity-ktx:1.13.0")
+    implementation("androidx.webkit:webkit:1.18.0")
+    implementation("androidx.media:media:1.8.0")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
 }
